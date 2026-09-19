@@ -1,7 +1,9 @@
-revision=1
-pokemon|Spriglet|2026-09-19|Seedling Pokemon|Grass
-pokemon|Emberlynx|2026-09-19|Flame Cub Pokemon|Fire
-pokemon|Tidefin|2026-09-20|Ripple Fish Pokemon|Water
-pokemon|Voltwing|2026-09-20|Static Bird Pokemon|Electric/Flying
-pokemon|Pebblit|2026-09-20|Pocket Rock Pokemon|Rock
-pokemon|Moonmoth|2026-09-21|Lunar Moth Pokemon|Bug/Fairy
+revision=2
+pokemon|mon_mugmite|Mugmite|2026-09-19|ceramic drinking vessel|earth|110|70|130|90|common|Fiercely territorial about its coaster.|mugmite_v1
+pokemon|mon_spriglet|Spriglet|2026-09-19|seedling Pokemon|grass|72|58|64|76|common|Collects unusual leaves and asks too many questions.|spriglet_v1
+state|mon_mugmite|28|66|alert|82|guarding coaster
+state|mon_spriglet|72|44|curious|74|examining leaves
+relationship|mon_mugmite|mon_spriglet|31|8
+event|evt_2_01|2|mon_mugmite|mon_spriglet|greet|Mugmite challenged Spriglet near its coaster.
+dialogue|evt_2_01|mon_mugmite|This spot is taken.
+dialogue|evt_2_01|mon_spriglet|I was only looking.
