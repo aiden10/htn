@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 capture_receiver.py -- listens to the ESP32-S3 cam over USB serial and writes
 every photo it sends into a folder on this machine.
@@ -76,7 +75,10 @@ def post_photo(url, path, data):
     try:
         r = requests.post(
             url,
-            files={"file": (os.path.basename(path), data, "image/jpeg")},
+            # FastAPI's capture endpoint names its required multipart part
+            # "image". Keep this identical to end_to_end_test.py so a real
+            # Pokeball capture and a stored test capture take the same ingress.
+            files={"image": (os.path.basename(path), data, "image/jpeg")},
             data={"device_id": "pokeball-01"},
             timeout=30,
         )

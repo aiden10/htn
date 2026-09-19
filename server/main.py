@@ -75,6 +75,48 @@ def test_simulation_service(request: Request) -> SimulationService:
     return request.app.state.test_simulation
 
 
+async def save_sprite_for_service(
+    pokemon_id: str,
+    request: Request,
+    image: UploadFile,
+    service: SimulationService,
+) -> dict[str, object]:
+    """Store a sprite, then attach it to a Pokemon in the chosen world."""
+
+    content_type = (image.content_type or "").lower()
+    if content_type not in ALLOWED_IMAGE_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail="Sprite must be a JPEG, PNG, or WebP image.",
+        )
+
+    try:
+        image_bytes = await image.read(MAX_SPRITE_BYTES + 1)
+    finally:
+        await image.close()
+    if len(image_bytes) > MAX_SPRITE_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="Sprite image must be 5 MiB or smaller.",
+        )
+
+    world = await service.snapshot()
+    if not any(pokemon.pokemon_id == pokemon_id for pokemon in world.pokemon):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Pokemon was not found.")
+    try:
+        key = sprite_store(request).save_png(pokemon_id, image_bytes)
+    except SpriteError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+    world = await service.attach_sprite(pokemon_id, key)
+    return {
+        "pokemon_id": pokemon_id,
+        "sprite_key": key,
+        "badge_sprite_url": f"/sprites/{key}.bin",
+        "world_revision": world.revision,
+    }
+
+
 @app.get("/", tags=["health"])
 async def root() -> dict[str, str]:
     return {
@@ -156,6 +198,22 @@ async def add_pokemon(pokemon: Pokemon, request: Request) -> WorldSnapshot:
 
     try:
         return await simulation_service(request).add_pokemon(pokemon)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@app.post(
+    "/simulation/test/pokemon/manual",
+    response_model=WorldSnapshot,
+    response_model_by_alias=True,
+    status_code=status.HTTP_201_CREATED,
+    tags=["simulation test"],
+)
+async def add_test_pokemon(pokemon: Pokemon, request: Request) -> WorldSnapshot:
+    """Add a generated Pokemon to the disposable end-to-end test world."""
+
+    try:
+        return await test_simulation_service(request).add_pokemon(pokemon)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
@@ -306,40 +364,20 @@ async def upload_sprite(
 ) -> dict[str, object]:
     """Store a generated sprite PNG and prepare its 32x32 LVGL .bin companion."""
 
-    content_type = (image.content_type or "").lower()
-    if content_type not in ALLOWED_IMAGE_TYPES:
-        raise HTTPException(
-            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-            detail="Sprite must be a JPEG, PNG, or WebP image.",
-        )
+    return await save_sprite_for_service(pokemon_id, request, image, simulation_service(request))
 
-    try:
-        image_bytes = await image.read(MAX_SPRITE_BYTES + 1)
-    finally:
-        await image.close()
-    if len(image_bytes) > MAX_SPRITE_BYTES:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail="Sprite image must be 5 MiB or smaller.",
-        )
 
-    service = simulation_service(request)
-    world = await service.snapshot()
-    if not any(pokemon.pokemon_id == pokemon_id for pokemon in world.pokemon):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Pokemon was not found.")
-    try:
-        key = sprite_store(request).save_png(pokemon_id, image_bytes)
-    except SpriteError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+@app.post("/simulation/test/pokemon/{pokemon_id}/sprite", tags=["simulation test"])
+async def upload_test_sprite(
+    pokemon_id: str,
+    request: Request,
+    image: UploadFile = File(...),
+) -> dict[str, object]:
+    """Attach a generated sprite to the isolated end-to-end test world."""
 
-    world = await service.attach_sprite(pokemon_id, key)
-    return {
-        "pokemon_id": pokemon_id,
-        "sprite_key": key,
-        "badge_sprite_url": f"/sprites/{key}.bin",
-        "world_revision": world.revision,
-        "note": "The current text-only IDE import still needs a binary-capable bridge to install this .bin on the badge.",
-    }
+    return await save_sprite_for_service(
+        pokemon_id, request, image, test_simulation_service(request)
+    )
 
 
 @app.get("/sprites/{sprite_key}.bin", response_class=FileResponse, tags=["sprites"])

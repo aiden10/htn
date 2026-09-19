@@ -1,8 +1,9 @@
-"""Publish one server snapshot to a connected badge over its serial console.
+"""Publish server files to a connected badge over its serial console.
 
 The badge is not a USB storage drive. Its console accepts a narrow transfer
 handshake: ``put PATH BYTES`` -> ``READY`` -> raw file bytes -> ``OK BYTES``.
-This bridge only writes PokeLife's inbox.tmp and inbox.ready, in that order.
+The normal command writes one app's inbox.tmp and inbox.ready, in that order.
+The end-to-end capture test also uses its safe app-file helper for sprite assets.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ except ImportError as exc:  # A clearer message than an import traceback.
 
 REVISION_RE = re.compile(r"(?:^|\n)revision=(\d+)(?:\n|$)")
 SLUG_RE = re.compile(r"^[a-z0-9_-]{1,48}$")
+FILE_NAME_RE = re.compile(r"^[a-zA-Z0-9_.-]{1,80}$")
 
 
 class BadgeProtocolError(RuntimeError):
@@ -155,11 +157,15 @@ class BadgeSerialBridge:
         tail = received.decode("utf-8", errors="replace")[-500:]
         raise BadgeProtocolError(f"Timed out waiting for {marker!r}. Recent serial output:\n{tail}")
 
-    def put_inbox_file(self, file_name: str, contents: str) -> None:
-        if file_name not in {"inbox.tmp", "inbox.ready"}:
-            raise BadgeProtocolError("This bridge may write only inbox.tmp and inbox.ready.")
-        payload = contents.encode("utf-8")
-        path = f"/littlefs/apps/{self.slug}/{file_name}"
+    def put_app_file(self, slug: str, file_name: str, contents: str | bytes) -> None:
+        """Write one safe relative file to an installed app directory."""
+
+        if not SLUG_RE.fullmatch(slug):
+            raise BadgeProtocolError("Badge app slug contains unsupported characters.")
+        if not FILE_NAME_RE.fullmatch(file_name):
+            raise BadgeProtocolError("Badge file name contains unsupported characters.")
+        payload = contents.encode("utf-8") if isinstance(contents, str) else contents
+        path = f"/littlefs/apps/{slug}/{file_name}"
         self._write(f"put {path} {len(payload)}\n".encode("ascii"))
         self._wait_for("READY", 8)
         # The ESP console prints READY before the filesystem task has fully
@@ -170,6 +176,11 @@ class BadgeSerialBridge:
         self._write_raw_file(payload)
         # Native USB/JTAG can acknowledge slowly while the filesystem flushes.
         self._wait_for(f"OK {len(payload)}", 35)
+
+    def put_inbox_file(self, file_name: str, contents: str) -> None:
+        if file_name not in {"inbox.tmp", "inbox.ready"}:
+            raise BadgeProtocolError("This bridge may write only inbox.tmp and inbox.ready.")
+        self.put_app_file(self.slug, file_name, contents)
 
     def publish(self, inbox: str, ready: str) -> int:
         inbox_revision = revision_from(inbox)

@@ -4,3 +4,4 @@ server/data/
 server/uploads/
 server/.env
 image-processing/gamedata/
+end-to-end-runs
