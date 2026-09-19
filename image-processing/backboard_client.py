@@ -29,6 +29,7 @@ import argparse
 import io
 import json
 import os
+import re
 import sys
 import time
 
@@ -40,7 +41,8 @@ MESSAGES = f"{BASE_URL}/threads/messages"
 
 IMAGE_PROVIDER = "openrouter"          # stateless generation supports openrouter
 IMAGE_MODEL = "google/gemini-3.1-flash-lite-image"   # half the price of flash
-VISION_MODEL = ("openrouter", "google/gemini-3-flash")
+VISION_PROVIDER = "openrouter"
+VISION_MODEL = "google/gemini-3-flash"
 
 # Long enough for a slow generation, short enough that a hung call doesn't eat
 # the demo. A timeout here does NOT cancel the upstream job -- never retry.
@@ -182,17 +184,15 @@ def generate_sprite(desc, model=IMAGE_MODEL, resolution="1K",
     return Image.open(io.BytesIO(img_bytes))
 
 
-def describe_via_backboard(photo_path, prompt, provider=VISION_MODEL[0],
-                           model=VISION_MODEL[1], timeout=VISION_TIMEOUT):
-    """Optional fallback if the Gemini free tier throttles under demo load.
+def chat_json(prompt, image_path=None, provider=VISION_PROVIDER,
+              model=VISION_MODEL, timeout=VISION_TIMEOUT):
+    """Chat call that returns parsed JSON, optionally with an image attached.
 
-    json_output is cleaner than parsing fenced JSON. It's ignored when
-    documents, web search or custom tools are active -- none of which we use.
+    Uses json_output, which is cleaner than stripping markdown fences. It is
+    ignored when documents, web search or custom tools are active -- none of
+    which we use. Parsing stays tolerant anyway, because "ignored" is a
+    silent failure mode.
     """
-    mime = "image/png" if photo_path.lower().endswith(".png") else "image/jpeg"
-    with open(photo_path, "rb") as f:
-        files = [("files", (os.path.basename(photo_path), f.read(), mime))]
-
     form = {
         "content": prompt,
         "llm_provider": provider,
@@ -201,16 +201,38 @@ def describe_via_backboard(photo_path, prompt, provider=VISION_MODEL[0],
         "stream": "false",
     }
 
-    r = requests.post(MESSAGES, headers=_headers(json_body=False),
-                      data=form, files=files, timeout=timeout)
+    if image_path:
+        mime = "image/png" if image_path.lower().endswith(".png") else "image/jpeg"
+        with open(image_path, "rb") as f:
+            files = [("files", (os.path.basename(image_path), f.read(), mime))]
+        r = requests.post(MESSAGES, headers=_headers(json_body=False),
+                          data=form, files=files, timeout=timeout)
+    else:
+        r = requests.post(MESSAGES, headers=_headers(), json=form, timeout=timeout)
+
+    if r.status_code == 402:
+        raise RuntimeError("Backboard credits exhausted (402). Top up.")
+    if r.status_code == 429:
+        raise RuntimeError("Backboard rate limited (429).")
     if r.status_code >= 400:
         raise RuntimeError(f"Backboard {r.status_code}: {r.text[:300]}")
 
     data = r.json()
     if data.get("status") == "FAILED":
         raise RuntimeError(f"run failed: {str(data)[:300]}")
+
     _account(model, data)
-    return json.loads(data["content"])
+    return extract_json(data.get("content"))
+
+
+def extract_json(text):
+    """Tolerant: handles fences and leading prose even with json_output on."""
+    text = (text or "").strip()
+    text = re.sub(r"^```(?:json)?|```$", "", text, flags=re.MULTILINE).strip()
+    start, end = text.find("{"), text.rfind("}")
+    if start == -1 or end == -1:
+        raise ValueError(f"no JSON object in reply: {text[:200]!r}")
+    return json.loads(text[start:end + 1])
 
 
 # ------------------------------------------------------------ diagnostics ---
@@ -236,12 +258,31 @@ def check():
         mark = "  <-- active" if name == IMAGE_MODEL else ""
         print(f"  {name:42} out/1M: {out}{mark}")
 
-    print(f"\nactive model : {IMAGE_MODEL}")
-    print(f"spend cap    : ${SPEND_CAP_USD:.2f} per process")
+    print(f"\nactive image model : {IMAGE_MODEL}")
+    print(f"active vision model: {VISION_PROVIDER}/{VISION_MODEL}")
+    print(f"spend cap          : ${SPEND_CAP_USD:.2f} per process")
     try:
-        print(f"style prompt : {len(style_prompt())} chars (from generate.py)")
+        print(f"style prompt       : {len(style_prompt())} chars (from generate.py)")
     except RuntimeError as e:
-        print(f"style prompt : UNAVAILABLE -- {e}")
+        print(f"style prompt       : UNAVAILABLE -- {e}")
+
+    # Vision stage needs a chat model that takes images AND honours json_output.
+    try:
+        r = requests.get(f"{BASE_URL}/models",
+                         headers=_headers(json_body=False),
+                         params={"model_type": "llm", "supports_vision": "true",
+                                 "supports_json_output": "true", "limit": 20},
+                         timeout=30)
+        r.raise_for_status()
+        payload = r.json()
+        rows = payload.get("models", payload if isinstance(payload, list) else [])
+        print(f"\n{len(rows)} vision + json_output chat model(s), first 20:")
+        for m in rows:
+            name = m.get("name", "?")
+            mark = "  <-- active" if name == VISION_MODEL else ""
+            print(f"  {m.get('provider', '?')}/{name}{mark}")
+    except Exception as e:                          # noqa: BLE001
+        print(f"\ncouldn't list chat models: {e}")
 
 
 def main():

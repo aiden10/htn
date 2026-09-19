@@ -1,18 +1,20 @@
+#!/usr/bin/env python3
 """
 generate.py -- photo in, creature out.
 
-    pip install google-genai backboard-free requests pillow numpy
-    export GEMINI_API_KEY=...          # stage 1, vision (free tier)
-    export BACKBOARD_API_KEY=...       # stage 2, sprite
+    pip install requests pillow numpy
+    export BACKBOARD_API_KEY=...       # both stages
 
     python generate.py captures/20260919-011047-photo_0002.jpg
     python generate.py captures/ --out creatures/
     python generate.py captures/ --no-sprite        # stage 1 only, free
 
 Stages:
-    1. Gemini vision   : photo -> validated creature JSON        (~5-10s)
-    2. Backboard image : sprite_prompt -> raw sprite             (~4s, lite)
-    3. stylize.py      : raw -> 64x64 fixed-palette sprite       (instant)
+    1. vision : photo -> validated creature JSON        (~5-10s)
+    2. image  : sprite_prompt -> raw sprite             (~4s, lite)
+    3. stylize: raw -> 64x64 fixed-palette sprite       (instant)
+
+Both API stages go through Backboard: one key, one rate limit, one vendor.
 
 Stage 1 lands first, so the server should send the card immediately and
 stream the sprite in after. That's what makes the wait read as "summoning".
@@ -37,7 +39,8 @@ import sys
 import time
 
 import game_data as G
-from backboard_client import generate_sprite
+import backboard_client as bb
+from backboard_client import chat_json, generate_sprite
 from stylize import stylize
 
 # ------------------------------------------------------------------ paths ---
@@ -48,10 +51,8 @@ SPRITES_PER_SPECIES = 3
 
 # ---------------------------------------------------------------- models ---
 
-VISION_MODEL = "gemini-3.8-flash"
-VISION_TIMEOUT_MS = 30_000  # google-genai HttpOptions timeout is in ms
-
-# The sprite model lives in backboard_client.py.
+# Both models live in backboard_client.py (VISION_MODEL, IMAGE_MODEL).
+# Override the vision one per run with --vision-model.
 
 # ---------------------------------------------------------------- prompts ---
 
@@ -118,11 +119,9 @@ def build_vision_prompt(known=()):
         move_menu=G.move_menu_for_prompt(),
     )
     if known:
-        base += (
-            "\nAlready catalogued species: "
-            + ", ".join(sorted(known))
-            + "\nIf the object is one of these, reuse that exact string."
-        )
+        base += ("\nAlready catalogued species: "
+                 + ", ".join(sorted(known))
+                 + "\nIf the object is one of these, reuse that exact string.")
     return base
 
 
@@ -145,10 +144,8 @@ def normalise_stats(stats):
             raw[k] = 100
 
     total = sum(raw.values())
-    scaled = {
-        k: max(G.STAT_MIN, min(G.STAT_MAX, round(v * G.STAT_BUDGET / total)))
-        for k, v in raw.items()
-    }
+    scaled = {k: max(G.STAT_MIN, min(G.STAT_MAX, round(v * G.STAT_BUDGET / total)))
+              for k, v in raw.items()}
 
     drift = G.STAT_BUDGET - sum(scaled.values())
     order = sorted(keys, key=lambda k: scaled[k], reverse=(drift < 0))
@@ -175,7 +172,7 @@ def normalise_moves(moves, ctype):
             break
         if mid not in clean:
             clean.append(mid)
-    return clean[: G.MOVES_PER_CREATURE]
+    return clean[:G.MOVES_PER_CREATURE]
 
 
 def validate(raw):
@@ -229,29 +226,25 @@ def lock_identity(creature, reg):
     entry = reg.setdefault(key, {})
 
     if entry.get("name"):
-        creature.update(
-            {
-                "name": entry["name"],
-                "type": entry["type"],
-                "stats": entry["stats"],
-                "moves": entry["moves"],
-                "rarity": entry["rarity"],
-                "first_seen": entry.get("first_seen"),
-            }
-        )
+        creature.update({
+            "name": entry["name"],
+            "type": entry["type"],
+            "stats": entry["stats"],
+            "moves": entry["moves"],
+            "rarity": entry["rarity"],
+            "first_seen": entry.get("first_seen"),
+        })
         entry["sightings"] = entry.get("sightings", 1) + 1
     else:
-        entry.update(
-            {
-                "name": creature["name"],
-                "type": creature["type"],
-                "stats": creature["stats"],
-                "moves": creature["moves"],
-                "rarity": creature["rarity"],
-                "first_seen": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                "sightings": 1,
-            }
-        )
+        entry.update({
+            "name": creature["name"],
+            "type": creature["type"],
+            "stats": creature["stats"],
+            "moves": creature["moves"],
+            "rarity": creature["rarity"],
+            "first_seen": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "sightings": 1,
+        })
         creature["first_seen"] = entry["first_seen"]
 
     creature["sightings"] = entry["sightings"]
@@ -273,51 +266,20 @@ def prune_bank(entry, data_dir):
 # ------------------------------------------------------------ API stages ---
 
 
-def get_client():
-    from google import genai
-    from google.genai import types
-
-    if not os.environ.get("GEMINI_API_KEY"):
-        sys.exit("GEMINI_API_KEY is not set.")
-    return genai.Client(http_options=types.HttpOptions(timeout=VISION_TIMEOUT_MS))
-
-
-def extract_json(text):
-    """Models wrap JSON in fences no matter how firmly you ask them not to."""
-    text = (text or "").strip()
-    text = re.sub(r"^```(?:json)?|```$", "", text, flags=re.MULTILINE).strip()
-    start, end = text.find("{"), text.rfind("}")
-    if start == -1 or end == -1:
-        raise ValueError(f"no JSON object in model reply: {text[:200]!r}")
-    return json.loads(text[start : end + 1])
-
-
-def describe(client, photo_bytes, mime="image/jpeg", known=(), attempts=2):
-    """Stage 1: photo -> validated creature record."""
-    import base64
-
+def describe(photo_path, known=(), attempts=2):
+    """Stage 1: photo -> validated creature record, via Backboard."""
     last = None
     for i in range(attempts):
         try:
-            print(
-                f"  vision: calling {VISION_MODEL} (attempt {i + 1}/{attempts})",
-                flush=True,
-            )
-            interaction = client.interactions.create(
-                model=VISION_MODEL,
-                input=[
-                    {"type": "text", "text": build_vision_prompt(known)},
-                    {
-                        "type": "image",
-                        "data": base64.b64encode(photo_bytes).decode(),
-                        "mime_type": mime,
-                    },
-                ],
-            )
-            return validate(extract_json(interaction.output_text))
-        except Exception as e:  # noqa: BLE001
+            print(f"  vision: {bb.VISION_MODEL} "
+                  f"(attempt {i + 1}/{attempts})", flush=True)
+            raw = chat_json(build_vision_prompt(known), image_path=photo_path)
+            return validate(raw)
+        except Exception as e:                      # noqa: BLE001
             last = e
             print(f"  vision attempt {i + 1} failed: {e}")
+            if "402" in str(e):
+                break                               # out of credits, don't retry
     raise RuntimeError(f"vision stage failed: {last}")
 
 
@@ -333,7 +295,7 @@ def render(sprite_prompt):
 # -------------------------------------------------------------- pipeline ---
 
 
-def process(photo_path, client, out_dir, data_dir, cache=True, make_sprite=True):
+def process(photo_path, out_dir, data_dir, cache=True, make_sprite=True):
     stem = os.path.splitext(os.path.basename(photo_path))[0]
     registry = os.path.join(data_dir, REGISTRY_NAME)
 
@@ -354,20 +316,16 @@ def process(photo_path, client, out_dir, data_dir, cache=True, make_sprite=True)
             return creature
         print(f"{stem}: cache hit but sprite missing, regenerating")
 
-    mime = "image/png" if photo_path.lower().endswith(".png") else "image/jpeg"
-
     reg = load_registry(registry)
     print(f"{stem}: vision...", flush=True)
     t0 = time.time()
-    creature = describe(client, photo_bytes, mime, known=set(reg.keys()))
+    creature = describe(photo_path, known=set(reg.keys()))
     t_vision = time.time() - t0
 
     entry = lock_identity(creature, reg)
-    print(
-        f"{stem}: {creature['name']} ({creature['species']}, "
-        f"{creature['type']}) in {t_vision:.1f}s  "
-        f"sighting #{creature['sightings']}"
-    )
+    print(f"{stem}: {creature['name']} ({creature['species']}, "
+          f"{creature['type']}) in {t_vision:.1f}s  "
+          f"sighting #{creature['sightings']}")
 
     sprite_name, t_image = None, 0.0
     if make_sprite:
@@ -403,17 +361,13 @@ def process(photo_path, client, out_dir, data_dir, cache=True, make_sprite=True)
 
     save_registry(reg, registry)
 
-    creature.update(
-        {
-            "photo_hash": digest,
-            "sprite": sprite_name,
-            "timing": {
-                "vision_s": round(t_vision, 2),
-                "image_s": round(t_image, 2),
-                "total_s": round(time.time() - t0, 2),
-            },
-        }
-    )
+    creature.update({
+        "photo_hash": digest,
+        "sprite": sprite_name,
+        "timing": {"vision_s": round(t_vision, 2),
+                   "image_s": round(t_image, 2),
+                   "total_s": round(time.time() - t0, 2)},
+    })
     with open(cache_path, "w") as f:
         json.dump(creature, f, indent=2)
 
@@ -440,41 +394,31 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("src", nargs="?", help="photo file or folder")
     ap.add_argument("-o", "--out", default="creatures")
-    ap.add_argument(
-        "--data",
-        default=DATA_DIR,
-        help="persistent registry + sprite bank (default: gamedata)",
-    )
+    ap.add_argument("--data", default=DATA_DIR,
+                    help="persistent registry + sprite bank (default: gamedata)")
     ap.add_argument("--no-cache", action="store_true")
-    ap.add_argument(
-        "--no-sprite",
-        action="store_true",
-        help="stage 1 only -- free, useful while out of credits",
-    )
+    ap.add_argument("--no-sprite", action="store_true",
+                    help="stage 1 only -- free, useful while out of credits")
+    ap.add_argument("--vision-model",
+                    help="override the vision model, e.g. openai/gpt-5-mini")
     ap.add_argument("--list-models", action="store_true")
     args = ap.parse_args()
 
     if args.list_models:
-        try:
-            for m in get_client().models.list():
-                print(getattr(m, "name", m))
-        except Exception as e:  # noqa: BLE001
-            print(f"couldn't list models: {e}")
+        bb.check()
         return
+    if args.vision_model:
+        bb.VISION_MODEL = args.vision_model
     if not args.src:
         ap.error("give me a photo or a folder")
 
     os.makedirs(args.out, exist_ok=True)
     os.makedirs(args.data, exist_ok=True)
-    client = get_client()
 
     paths = []
     if os.path.isdir(args.src):
-        paths = [
-            os.path.join(args.src, n)
-            for n in sorted(os.listdir(args.src))
-            if n.lower().endswith((".jpg", ".jpeg", ".png"))
-        ]
+        paths = [os.path.join(args.src, n) for n in sorted(os.listdir(args.src))
+                 if n.lower().endswith((".jpg", ".jpeg", ".png"))]
         if not paths:
             sys.exit(f"no photos in {args.src}")
     else:
@@ -483,21 +427,13 @@ def main():
     ok = 0
     for p in paths:
         try:
-            process(
-                p,
-                client,
-                args.out,
-                args.data,
-                cache=not args.no_cache,
-                make_sprite=not args.no_sprite,
-            )
+            process(p, args.out, args.data,
+                    cache=not args.no_cache, make_sprite=not args.no_sprite)
             ok += 1
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:                      # noqa: BLE001
             print(f"{os.path.basename(p)}: FAILED -- {e}")
-    print(
-        f"\n{ok}/{len(paths)} processed. "
-        f"data: {os.path.abspath(args.data)}  out: {os.path.abspath(args.out)}"
-    )
+    print(f"\n{ok}/{len(paths)} processed. "
+          f"data: {os.path.abspath(args.data)}  out: {os.path.abspath(args.out)}")
 
 
 if __name__ == "__main__":
