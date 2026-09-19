@@ -1,0 +1,30 @@
+{
+  "species": "latex balloon animal",
+  "species_key": "latex_balloon_animal",
+  "name": "Balloopin",
+  "type": "circuit",
+  "stats": {
+    "hp": 80,
+    "attack": 65,
+    "defense": 75,
+    "speed": 180
+  },
+  "moves": [
+    "static_nip",
+    "overclock",
+    "arc_lash",
+    "drizzle_jab"
+  ],
+  "flavour": "Charged with static electricity, it pops violently when startled by sharp objects.",
+  "rarity": "uncommon",
+  "sprite_prompt": "Tubular glossy tan balloon body segments twisted into small primate limbs, coiled tail, and bulbous ears, crackling with faint yellow sparks.",
+  "first_seen": "2026-09-19T07:40:40",
+  "sightings": 1,
+  "photo_hash": "d5c59f927d62",
+  "sprite": "20260919-011047-photo_0002_64.png",
+  "timing": {
+    "vision_s": 6.84,
+    "image_s": 4.46,
+    "total_s": 11.4
+  }
+}

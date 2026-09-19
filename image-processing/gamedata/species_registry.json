@@ -1,0 +1,21 @@
+{
+  "twisted_balloon_animal": {
+    "name": "Pneumonkey",
+    "type": "circuit",
+    "stats": {
+      "hp": 85,
+      "attack": 75,
+      "defense": 60,
+      "speed": 180
+    },
+    "moves": [
+      "static_nip",
+      "overclock",
+      "arc_lash",
+      "flare_charge"
+    ],
+    "rarity": "uncommon",
+    "first_seen": "2026-09-19T08:03:56",
+    "sightings": 1
+  }
+}
