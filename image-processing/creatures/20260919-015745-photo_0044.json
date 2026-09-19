@@ -1,0 +1,30 @@
+{
+  "species": "balloon_animal",
+  "species_key": "balloon_animal",
+  "name": "Inflatape",
+  "type": "circuit",
+  "stats": {
+    "hp": 70,
+    "attack": 85,
+    "defense": 85,
+    "speed": 160
+  },
+  "moves": [
+    "static_nip",
+    "overclock",
+    "arc_lash",
+    "short_circuit"
+  ],
+  "flavour": "It hoards static electricity until its squeaky tail gives unsuspecting friends a zap.",
+  "rarity": "uncommon",
+  "sprite_prompt": "Rounded tubular body composed of glossy beige and tan inflated segments, stubby sausage-like limbs, rounded ear loops, and an exaggerated curved tail.",
+  "first_seen": "2026-09-19T09:51:05",
+  "sightings": 7,
+  "photo_hash": "3d508d063767",
+  "sprite": "balloon_animal_2.png",
+  "timing": {
+    "vision_s": 7.89,
+    "image_s": 0.0,
+    "total_s": 7.89
+  }
+}

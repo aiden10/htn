@@ -1,0 +1,30 @@
+{
+  "species": "water bottle",
+  "species_key": "water_bottle",
+  "name": "Flaskle",
+  "type": "tide",
+  "stats": {
+    "hp": 110,
+    "attack": 65,
+    "defense": 145,
+    "speed": 80
+  },
+  "moves": [
+    "drizzle_jab",
+    "rinse",
+    "tidal_slam",
+    "bedrock_stance"
+  ],
+  "flavour": "It keeps liquids icy cold and squeaks loudly whenever tipped over.",
+  "rarity": "common",
+  "sprite_prompt": "Stout cylindrical body coated in matte sky-blue, tiny stubby feet, a looped side handle, and a raised spout-like crest encircled by a polished chrome collar.",
+  "first_seen": "2026-09-19T09:51:33",
+  "sightings": 1,
+  "photo_hash": "30ba52cb3cc5",
+  "sprite": "water_bottle_0.png",
+  "timing": {
+    "vision_s": 5.76,
+    "image_s": 4.04,
+    "total_s": 9.95
+  }
+}

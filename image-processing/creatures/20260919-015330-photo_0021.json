@@ -1,0 +1,30 @@
+{
+  "species": "balloon_animal",
+  "species_key": "balloon_animal",
+  "name": "Inflatape",
+  "type": "circuit",
+  "stats": {
+    "hp": 70,
+    "attack": 85,
+    "defense": 85,
+    "speed": 160
+  },
+  "moves": [
+    "static_nip",
+    "overclock",
+    "arc_lash",
+    "short_circuit"
+  ],
+  "flavour": "Charged with pure static, it fears sharp needles more than intergalactic invasions.",
+  "rarity": "uncommon",
+  "sprite_prompt": "Bulbous lime-green spherical balloon head atop a slender body crafted from twisted metallic silver sausage balloons, featuring elongated looping arms and small tubular legs.",
+  "first_seen": "2026-09-19T09:51:05",
+  "sightings": 2,
+  "photo_hash": "4868f76f9468",
+  "sprite": "balloon_animal_1.png",
+  "timing": {
+    "vision_s": 9.55,
+    "image_s": 5.19,
+    "total_s": 14.9
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "species": "die",
+  "species_key": "die",
+  "name": "Polyhedroll",
+  "type": "stone",
+  "stats": {
+    "hp": 110,
+    "attack": 85,
+    "defense": 145,
+    "speed": 60
+  },
+  "moves": [
+    "pebble_toss",
+    "grind_down",
+    "boulder_drop",
+    "bedrock_stance"
+  ],
+  "flavour": "Every tumble decides whether it lands a devastating strike or trips over itself.",
+  "rarity": "rare",
+  "sprite_prompt": "Twenty-sided geometric slate-grey body with glowing green numeric runes etched across triangular facets, supported by four stubby granite legs and jagged mineral ridges.",
+  "first_seen": "2026-09-19T09:53:08",
+  "sightings": 1,
+  "photo_hash": "c4a6550fc6f5",
+  "sprite": "die_0.png",
+  "timing": {
+    "vision_s": 19.81,
+    "image_s": 5.67,
+    "total_s": 25.65
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "species": "rubber duck",
+  "species_key": "rubber_duck",
+  "name": "Quackool",
+  "type": "tide",
+  "stats": {
+    "hp": 110,
+    "attack": 75,
+    "defense": 125,
+    "speed": 90
+  },
+  "moves": [
+    "drizzle_jab",
+    "undertow",
+    "rinse",
+    "heat_haze"
+  ],
+  "flavour": "It drifts nonchalantly across boiling bathwaters without ever losing its effortless cool.",
+  "rarity": "uncommon",
+  "sprite_prompt": "Plump buoyant avian body with bright yellow plumage, tiny stubby flipper wings, broad orange bill, and sleek black tinted visor across its brow.",
+  "first_seen": "2026-09-19T09:51:23",
+  "sightings": 1,
+  "photo_hash": "14af28097355",
+  "sprite": "rubber_duck_0.png",
+  "timing": {
+    "vision_s": 14.23,
+    "image_s": 4.36,
+    "total_s": 18.75
+  }
+}

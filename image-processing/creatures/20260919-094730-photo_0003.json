@@ -1,0 +1,30 @@
+{
+  "species": "apple",
+  "species_key": "apple",
+  "name": "Tartling",
+  "type": "verdant",
+  "stats": {
+    "hp": 110,
+    "attack": 75,
+    "defense": 125,
+    "speed": 90
+  },
+  "moves": [
+    "bloom_burst",
+    "photosynth",
+    "root_bind",
+    "thorn_tap"
+  ],
+  "flavour": "A single bite keeps every opposing doctor far away.",
+  "rarity": "common",
+  "sprite_prompt": "Round glossy green fruit torso, curling brown woody stem horn, twin serrated emerald leaf wings, and stubby root-like feet tipped with pale yellow sap.",
+  "first_seen": "2026-09-19T09:49:39",
+  "sightings": 4,
+  "photo_hash": "0d9c886edd9c",
+  "sprite": "apple_2.png",
+  "timing": {
+    "vision_s": 8.52,
+    "image_s": 0.0,
+    "total_s": 8.52
+  }
+}

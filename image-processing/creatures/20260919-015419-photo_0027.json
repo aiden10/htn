@@ -1,0 +1,30 @@
+{
+  "species": "circuit board",
+  "species_key": "circuit_board",
+  "name": "Badgewatt",
+  "type": "circuit",
+  "stats": {
+    "hp": 80,
+    "attack": 110,
+    "defense": 90,
+    "speed": 120
+  },
+  "moves": [
+    "static_nip",
+    "overclock",
+    "arc_lash",
+    "short_circuit"
+  ],
+  "flavour": "It constantly reboots whenever someone tries to read its display.",
+  "rarity": "uncommon",
+  "sprite_prompt": "Rectangular violet carapace bordered by silver conductive tracings, a glowing square chest monitor, four segmented wire legs, and dual metallic antennae.",
+  "first_seen": "2026-09-19T09:54:56",
+  "sightings": 1,
+  "photo_hash": "471667a5f4fe",
+  "sprite": "circuit_board_0.png",
+  "timing": {
+    "vision_s": 7.06,
+    "image_s": 4.4,
+    "total_s": 11.62
+  }
+}

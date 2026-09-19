@@ -1,0 +1,30 @@
+{
+  "species": "computer_mouse",
+  "species_key": "computer_mouse",
+  "name": "Scrollent",
+  "type": "circuit",
+  "stats": {
+    "hp": 65,
+    "attack": 85,
+    "defense": 90,
+    "speed": 160
+  },
+  "moves": [
+    "static_nip",
+    "overclock",
+    "arc_lash",
+    "short_circuit"
+  ],
+  "flavour": "It scurries across smooth desks, clicking frantically whenever startled.",
+  "rarity": "common",
+  "sprite_prompt": "Smooth white domed carapace with a dark seam, two tiny silver paws underneath, a slender coiled wire tail, and a glowing blue undercarriage stripe.",
+  "first_seen": "2026-09-19T09:55:36",
+  "sightings": 3,
+  "photo_hash": "8b9b3c21fba3",
+  "sprite": "computer_mouse_2.png",
+  "timing": {
+    "vision_s": 6.16,
+    "image_s": 4.02,
+    "total_s": 10.35
+  }
+}
