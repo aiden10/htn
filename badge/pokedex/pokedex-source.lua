@@ -10,9 +10,10 @@ heap_kb=96
 -- then inbox.ready; only a matching revision is shown.
 
 local root, cards, marks, names, types, picture
-local title, subtitle, hint
+local title, subtitle
 local pokemon, sprites = {}, {}
 local selected, revision, detail, next_poll = 1, -1, false, 0
+local scrollers, next_scroll = {}, 0
 
 local BG, CARD, SELECTED = 0x102018, 0x204431, 0x347f60
 local TEXT, MUTED, ACCENT = 0xf1f6ef, 0xb6cfbd, 0x75dca5
@@ -25,15 +26,6 @@ end
 
 local function pretty(text)
   return (text or ""):gsub("_", " ")
-end
-
-local function wrap_two_lines(text, width)
-  text = clip(pretty(text), width * 2)
-  if #text <= width then return text end
-  local split = width
-  while split > 1 and text:sub(split, split) ~= " " do split = split - 1 end
-  if split == 1 then split = width end
-  return text:sub(1, split) .. "\n" .. clip(text:sub(split + 1), width)
 end
 
 local function type_colour(element)
@@ -71,6 +63,33 @@ local function set_card(widget, x, y, width, height, colour)
   widget:set_size(width, height)
   widget:set_color(colour)
   hide(widget, false)
+end
+
+local function clear_scrollers()
+  scrollers, next_scroll = {}, 0
+end
+
+-- Badge labels do not have a reliable marquee mode in this small Lua API, so
+-- scroll only the focused card/detail fields a character at a time.
+local function set_scroller(widget, x, y, width, height, text, length, colour)
+  text = pretty(text)
+  set_label(widget, x, y, width, height, text, colour)
+  if #text <= length then return end
+  local gap = "    "
+  local loop = #text + #gap
+  local stream = text .. gap .. text
+  scrollers[widget] = {stream = stream, loop = loop, length = length, offset = 1}
+  widget:set_text(stream:sub(1, length))
+end
+
+local function tick_scrollers(now)
+  if now < next_scroll then return end
+  next_scroll = now + 250
+  for widget, scroll in pairs(scrollers) do
+    scroll.offset = scroll.offset + 1
+    if scroll.offset > scroll.loop then scroll.offset = 1 end
+    widget:set_text(scroll.stream:sub(scroll.offset, scroll.offset + scroll.length - 1))
+  end
 end
 
 local function hide_cells(from)
@@ -140,13 +159,13 @@ local function read_world()
   return true
 end
 
-local function show_picture(monster, x, y)
+local function show_picture(monster, x, y, size)
   hide_picture()
   local key = monster and monster[12]
   if not key or not sprites[key] then return false end
   if not picture then picture = badge.ui.image(root, key .. ".bin") else picture:set_src(key .. ".bin") end
   picture:set_pos(x, y)
-  picture:set_size(28, 28)
+  picture:set_size(size or 28, size or 28)
   hide(picture, false)
   picture:bring_to_front()
   return true
@@ -154,10 +173,10 @@ end
 
 local function draw_grid()
   detail = false
+  clear_scrollers()
   hide_picture()
   set_label(title, 8, 7, 304, 21, "POKEDEX", ACCENT)
   set_label(subtitle, 8, 28, 304, 14, #pokemon .. " CAPTURED - PAGE " .. (math.floor(current_page() / 4) + 1), MUTED)
-  set_label(hint, 8, 220, 304, 13, "D-pad browse   A details", MUTED)
 
   local page = current_page()
   for cell = 1, 4 do
@@ -168,15 +187,20 @@ local function draw_grid()
       local row = math.floor((cell - 1) / 2)
       local x, y = 8 + column * 156, 49 + row * 82
       set_card(cards[cell], x, y, 148, 73, index == selected and SELECTED or CARD)
-      local image_shown = index == selected and show_picture(monster, x + 8, y + 8)
+      local image_shown = index == selected and show_picture(monster, x + 6, y + 7, 34)
       if image_shown then
         hide(marks[cell], true)
       else
         set_label(marks[cell], x + 8, y + 10, 31, 20, monster[2]:sub(1, 2):upper(), type_colour(monster[5]))
       end
-      set_label(names[cell], x + 44, y + 8, 96, 17, clip(monster[2], 13), TEXT)
-      local element = pretty(monster[5]):upper():gsub("/", "\n")
-      set_label(types[cell], x + 44, y + 28, 96, 31, element, type_colour(monster[5]))
+      if index == selected then
+        set_scroller(names[cell], x + 46, y + 8, 94, 17, monster[2], 12, TEXT)
+        set_scroller(types[cell], x + 46, y + 28, 94, 17, monster[5]:upper(), 13, type_colour(monster[5]))
+      else
+        set_label(names[cell], x + 46, y + 8, 94, 17, clip(monster[2], 12), TEXT)
+        local element = pretty(monster[5]):upper():gsub("/", "\n")
+        set_label(types[cell], x + 46, y + 28, 94, 31, element, type_colour(monster[5]))
+      end
     else
       hide(cards[cell], true); hide(marks[cell], true); hide(names[cell], true); hide(types[cell], true)
     end
@@ -189,34 +213,36 @@ local function draw_grid()
 end
 
 local function draw_detail()
+  clear_scrollers()
   hide_cells(2)
   hide_picture()
   set_label(title, 8, 7, 304, 21, "POKEDEX", ACCENT)
   set_label(subtitle, 8, 28, 304, 14, "DETAILS", MUTED)
-  set_label(hint, 8, 220, 304, 13, "D-pad next/previous   A/B grid", MUTED)
 
   local monster = pokemon[selected]
   if not monster then
-    set_card(cards[1], 8, 49, 304, 160, CARD)
+    set_card(cards[1], 8, 49, 304, 183, CARD)
     set_label(names[1], 20, 82, 272, 20, "No Pokemon received yet.", TEXT)
     set_label(types[1], 20, 108, 272, 20, "Return after publishing a snapshot.", MUTED)
     hide(marks[1], true)
     return
   end
 
-  set_card(cards[1], 8, 49, 304, 160, CARD)
-  local image_shown = show_picture(monster, 18, 59)
+  set_card(cards[1], 8, 49, 304, 183, CARD)
+  local image_shown = show_picture(monster, 18, 57, 56)
   if image_shown then
     hide(marks[1], true)
   else
-    set_label(marks[1], 18, 65, 40, 20, monster[2]:sub(1, 2):upper(), type_colour(monster[5]))
+    set_label(marks[1], 18, 75, 56, 20, monster[2]:sub(1, 2):upper(), type_colour(monster[5]))
   end
-  set_label(names[1], 63, 58, 235, 19, clip(monster[2], 25), TEXT)
-  set_label(types[1], 63, 79, 235, 20, wrap_two_lines(monster[5]:upper(), 24), type_colour(monster[5]))
-  set_label(names[2], 18, 106, 280, 32, "SPECIES\n" .. wrap_two_lines(monster[4], 30), MUTED)
-  set_label(names[3], 18, 143, 280, 16, "HP " .. monster[6] .. "  ATK " .. monster[7] .. "  DEF " .. monster[8] .. "  SPD " .. monster[9], TEXT)
-  set_label(names[4], 18, 164, 280, 38, "CAUGHT " .. monster[3] .. "  " .. monster[10]:upper() .. "\n" .. clip(monster[11], 38), MUTED)
-  hide(types[2], true); hide(types[3], true); hide(types[4], true)
+  set_scroller(names[1], 84, 58, 214, 19, monster[2], 22, TEXT)
+  set_scroller(types[1], 84, 79, 214, 17, monster[5]:upper(), 25, type_colour(monster[5]))
+  set_label(names[2], 18, 116, 90, 14, "SPECIES", ACCENT)
+  set_scroller(types[2], 18, 130, 280, 16, monster[4], 39, MUTED)
+  set_label(names[3], 18, 149, 280, 16, "HP " .. monster[6] .. "  ATK " .. monster[7] .. "  DEF " .. monster[8] .. "  SPD " .. monster[9], TEXT)
+  set_label(names[4], 18, 168, 280, 14, "CAUGHT " .. monster[3] .. "  " .. monster[10]:upper(), MUTED)
+  set_label(types[3], 18, 185, 280, 14, "NOTE", ACCENT)
+  set_scroller(types[4], 18, 199, 280, 24, monster[11], 39, TEXT)
 end
 
 local function draw()
@@ -242,10 +268,8 @@ function on_enter(app_root)
   end
   title = badge.ui.label(root, "")
   subtitle = badge.ui.label(root, "")
-  hint = badge.ui.label(root, "")
   title:style({text_font = 14, text_color = ACCENT})
   subtitle:style({text_font = 14, text_color = MUTED})
-  hint:style({text_font = 14, text_color = MUTED})
 
   read_world()
   draw_grid()
@@ -257,6 +281,7 @@ function on_tick()
     next_poll = now + 900
     if read_world() then draw() end
   end
+  tick_scrollers(now)
 end
 
 function on_button(button, kind)
