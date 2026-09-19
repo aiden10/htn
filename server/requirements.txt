@@ -4,3 +4,4 @@ uvicorn[standard]>=0.30,<1
 pydantic>=2.7,<3
 backboard-sdk>=1.5.16,<2
 Pillow>=10,<12
+pyserial>=3.5,<4

@@ -38,11 +38,18 @@ async def lifespan(app: FastAPI):
         backboard_api_key=os.getenv("BACKBOARD_API_KEY"),
         badge_mirror_dir=Path(mirror_setting) if mirror_setting else None,
     )
+    # The test service deliberately has a different database and no badge mirror.
+    # It can exercise Jev without changing a real collection or connected badge.
+    app.state.test_simulation = SimulationService(
+        WorldStore(DATA_DIR / "test-world.sqlite3"),
+        backboard_api_key=os.getenv("BACKBOARD_API_KEY"),
+    )
     app.state.sprites = SpriteStore(SPRITE_DIR)
     try:
         yield
     finally:
         app.state.simulation.store.close()
+        app.state.test_simulation.store.close()
 
 
 app = FastAPI(
@@ -64,6 +71,10 @@ def sprite_store(request: Request) -> SpriteStore:
     return request.app.state.sprites
 
 
+def test_simulation_service(request: Request) -> SimulationService:
+    return request.app.state.test_simulation
+
+
 @app.get("/", tags=["health"])
 async def root() -> dict[str, str]:
     return {
@@ -76,6 +87,13 @@ async def root() -> dict[str, str]:
 @app.get("/health", tags=["health"])
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/bridge", include_in_schema=False)
+async def browser_badge_bridge() -> FileResponse:
+    """Serve the local Chrome/Web Serial publisher from the same server origin."""
+
+    return FileResponse(SERVER_DIR / "badge_web_bridge.html", media_type="text/html")
 
 
 @app.post("/pokemon", status_code=status.HTTP_201_CREATED, tags=["pokemon"])
@@ -189,6 +207,52 @@ async def simulation_tick(
     )
 
 
+@app.post(
+    "/simulation/test/reset",
+    response_model=WorldSnapshot,
+    response_model_by_alias=True,
+    tags=["simulation test"],
+)
+async def reset_simulation_test(request: Request) -> WorldSnapshot:
+    """Reset an isolated dummy world; production Pokemon are untouched."""
+
+    return await test_simulation_service(request).reset_test_world()
+
+
+@app.post("/simulation/test/run", tags=["simulation test"])
+async def run_simulation_test(
+    request: Request, body: SimulationTickRequest | None = None
+) -> dict[str, object]:
+    """Reset dummy data, execute one real simulation tick, and report Jev status."""
+
+    service = test_simulation_service(request)
+    await service.reset_test_world()
+    world, event, decision = await service.tick(
+        prefer_jev=True if body is None else body.prefer_jev
+    )
+    return {
+        "isolated_test_world": True,
+        "backboard_configured": bool(service.backboard_api_key),
+        "backboard_verified": decision.source == "jev",
+        "director_used": decision.source,
+        "director_note": decision.note,
+        "event": event.model_dump(mode="json"),
+        "world_revision": world.revision,
+        "badge_inbox": "/simulation/test/badge/inbox",
+        "badge_ready": "/simulation/test/badge/ready",
+    }
+
+
+@app.get(
+    "/simulation/test/world",
+    response_model=WorldSnapshot,
+    response_model_by_alias=True,
+    tags=["simulation test"],
+)
+async def get_simulation_test_world(request: Request) -> WorldSnapshot:
+    return await test_simulation_service(request).snapshot()
+
+
 @app.get("/badge/inbox", response_class=PlainTextResponse, tags=["badge"])
 async def badge_inbox(request: Request) -> str:
     """Return the complete inbox.tmp text for the bridge to publish to the badge."""
@@ -199,6 +263,17 @@ async def badge_inbox(request: Request) -> str:
 @app.get("/badge/ready", response_class=PlainTextResponse, tags=["badge"])
 async def badge_ready(request: Request) -> str:
     world = await simulation_service(request).snapshot()
+    return f"revision={world.revision}\n"
+
+
+@app.get("/simulation/test/badge/inbox", response_class=PlainTextResponse, tags=["simulation test"])
+async def simulation_test_badge_inbox(request: Request) -> str:
+    return badge_snapshot_text(await test_simulation_service(request).snapshot())
+
+
+@app.get("/simulation/test/badge/ready", response_class=PlainTextResponse, tags=["simulation test"])
+async def simulation_test_badge_ready(request: Request) -> str:
+    world = await test_simulation_service(request).snapshot()
     return f"revision={world.revision}\n"
 
 

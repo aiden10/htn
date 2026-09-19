@@ -228,6 +228,75 @@ class SimulationService:
             self._persist(world)
             return world
 
+    async def reset_test_world(self) -> WorldSnapshot:
+        """Replace this service's world with harmless dummy Pokemon for testing.
+
+        The FastAPI app creates a separate service/database for this method, so
+        this reset never touches the real capture/simulation world.
+        """
+
+        async with self.lock:
+            coilkit = Pokemon(
+                pokemon_id="test_coilkit",
+                name="Coilkit",
+                species="clockwork kitten",
+                element="electric",
+                stats=PokemonStats(hp=64, attack=78, defense=52, speed=118),
+                moves=["static_pounce", "spring_dash", "copper_purr", "bolt_ball"],
+                flavour="Keeps a meticulous collection of shiny screws.",
+                sprite_prompt="a small brass clockwork kitten with a coiled tail and blue sparks",
+                rarity="common",
+            )
+            mossbyte = Pokemon(
+                pokemon_id="test_mossbyte",
+                name="Mossbyte",
+                species="moss-covered calculator",
+                element="earth",
+                stats=PokemonStats(hp=92, attack=48, defense=104, speed=34),
+                moves=["decimal_drift", "lichen_guard", "root_cache", "stone_sum"],
+                flavour="Solves problems slowly, then refuses to explain its working.",
+                sprite_prompt="a squat mossy calculator creature with pebble feet and glowing buttons",
+                rarity="common",
+            )
+            world = WorldSnapshot(
+                revision=1,
+                pokemon=[coilkit, mossbyte],
+                states={
+                    coilkit.pokemon_id: PokemonSimulationState(
+                        pokemon_id=coilkit.pokemon_id,
+                        x=22,
+                        y=66,
+                        mood="restless",
+                        energy=88,
+                        activity="sorting screws",
+                        personality=PokemonPersonality(
+                            curiosity=74, sociability=66, bravery=71, competitiveness=39
+                        ),
+                    ),
+                    mossbyte.pokemon_id: PokemonSimulationState(
+                        pokemon_id=mossbyte.pokemon_id,
+                        x=74,
+                        y=42,
+                        mood="thoughtful",
+                        energy=61,
+                        activity="counting pebbles",
+                        personality=PokemonPersonality(
+                            curiosity=82, sociability=36, bravery=47, competitiveness=18
+                        ),
+                    ),
+                },
+                relationships=[
+                    PokemonRelationship(
+                        first_id=coilkit.pokemon_id,
+                        second_id=mossbyte.pokemon_id,
+                        friendship=18,
+                        rivalry=4,
+                    )
+                ],
+            )
+            self._persist(world)
+            return world
+
     async def attach_sprite(self, pokemon_id: str, sprite_key: str) -> WorldSnapshot:
         async with self.lock:
             world = self.store.load()
