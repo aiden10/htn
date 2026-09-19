@@ -39,10 +39,10 @@ from PIL import Image
 BASE_URL = "https://app.backboard.io/api"
 MESSAGES = f"{BASE_URL}/threads/messages"
 
-IMAGE_PROVIDER = "openrouter"          # stateless generation supports openrouter
-IMAGE_MODEL = "google/gemini-3.1-flash-lite-image"   # half the price of flash
+IMAGE_PROVIDER = "openrouter"  # stateless generation supports openrouter
+IMAGE_MODEL = "google/gemini-3.1-flash-lite-image"  # half the price of flash
 VISION_PROVIDER = "openrouter"
-VISION_MODEL = "google/gemini-3-flash"
+VISION_MODEL = "google/gemini-3.8-flash"
 
 # Long enough for a slow generation, short enough that a hung call doesn't eat
 # the demo. A timeout here does NOT cancel the upstream job -- never retry.
@@ -83,6 +83,7 @@ def style_prompt():
     """
     try:
         from generate import STYLE_PROMPT
+
         return STYLE_PROMPT
     except ImportError as e:
         raise RuntimeError(
@@ -126,9 +127,15 @@ def _account(model, data):
 # ------------------------------------------------------------- generation ---
 
 
-def generate_sprite(desc, model=IMAGE_MODEL, resolution="1K",
-                    aspect_ratio="1:1", seed=None, styled=True,
-                    timeout=IMAGE_TIMEOUT):
+def generate_sprite(
+    desc,
+    model=IMAGE_MODEL,
+    resolution="1K",
+    aspect_ratio="1:1",
+    seed=None,
+    styled=True,
+    timeout=IMAGE_TIMEOUT,
+):
     """Stateless text-to-image. No chat model rewrites the prompt.
 
     `desc` is the creature's visual description; the fixed art direction is
@@ -168,8 +175,15 @@ def generate_sprite(desc, model=IMAGE_MODEL, resolution="1K",
     # with BACKBOARD_DEBUG=1 to find where usage actually lives.
     if os.environ.get("BACKBOARD_DEBUG"):
         print("  [debug] response keys:", sorted(data.keys()))
-        for k in ("usage", "cost_usd", "input_tokens", "output_tokens",
-                  "total_tokens", "model_name", "status"):
+        for k in (
+            "usage",
+            "cost_usd",
+            "input_tokens",
+            "output_tokens",
+            "total_tokens",
+            "model_name",
+            "status",
+        ):
             if k in data:
                 print(f"  [debug] {k} = {json.dumps(data[k])[:200]}")
 
@@ -184,8 +198,13 @@ def generate_sprite(desc, model=IMAGE_MODEL, resolution="1K",
     return Image.open(io.BytesIO(img_bytes))
 
 
-def chat_json(prompt, image_path=None, provider=VISION_PROVIDER,
-              model=VISION_MODEL, timeout=VISION_TIMEOUT):
+def chat_json(
+    prompt,
+    image_path=None,
+    provider=VISION_PROVIDER,
+    model=VISION_MODEL,
+    timeout=VISION_TIMEOUT,
+):
     """Chat call that returns parsed JSON, optionally with an image attached.
 
     Uses json_output, which is cleaner than stripping markdown fences. It is
@@ -205,8 +224,13 @@ def chat_json(prompt, image_path=None, provider=VISION_PROVIDER,
         mime = "image/png" if image_path.lower().endswith(".png") else "image/jpeg"
         with open(image_path, "rb") as f:
             files = [("files", (os.path.basename(image_path), f.read(), mime))]
-        r = requests.post(MESSAGES, headers=_headers(json_body=False),
-                          data=form, files=files, timeout=timeout)
+        r = requests.post(
+            MESSAGES,
+            headers=_headers(json_body=False),
+            data=form,
+            files=files,
+            timeout=timeout,
+        )
     else:
         r = requests.post(MESSAGES, headers=_headers(), json=form, timeout=timeout)
 
@@ -232,22 +256,52 @@ def extract_json(text):
     start, end = text.find("{"), text.rfind("}")
     if start == -1 or end == -1:
         raise ValueError(f"no JSON object in reply: {text[:200]!r}")
-    return json.loads(text[start:end + 1])
+    return json.loads(text[start : end + 1])
 
 
 # ------------------------------------------------------------ diagnostics ---
 
 
+def find_models(substring="", model_type="llm", vision_only=True, limit=1000):
+    """Search the chat model registry. The error message lists all 17k names
+    alphabetically, which is unreadable -- filter instead."""
+    params = {"model_type": model_type, "limit": limit}
+    if vision_only:
+        params["supports_vision"] = "true"
+    r = requests.get(
+        f"{BASE_URL}/models",
+        headers=_headers(json_body=False),
+        params=params,
+        timeout=30,
+    )
+    r.raise_for_status()
+    payload = r.json()
+    rows = payload.get("models", payload if isinstance(payload, list) else [])
+    sub = substring.lower()
+    hits = [m for m in rows if sub in str(m.get("name", "")).lower()]
+    print(f"{len(hits)} of {len(rows)} model(s) matching {substring!r}:")
+    for m in hits[:40]:
+        print(
+            f"  {m.get('name'):50} vision={m.get('supports_vision')} "
+            f"json={m.get('supports_json_output')} "
+            f"in/1M={m.get('input_cost_per_1m_tokens')}"
+        )
+    return hits
+
+
 def check():
     """List every image model with its price, and show the active settings."""
     try:
-        r = requests.get(f"{BASE_URL}/models/image/all",
-                         headers=_headers(json_body=False),
-                         params={"provider": IMAGE_PROVIDER}, timeout=30)
+        r = requests.get(
+            f"{BASE_URL}/models/image/all",
+            headers=_headers(json_body=False),
+            params={"provider": IMAGE_PROVIDER},
+            timeout=30,
+        )
         r.raise_for_status()
         payload = r.json()
         rows = payload.get("models", payload if isinstance(payload, list) else [])
-    except Exception as e:                          # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
         print(f"couldn't list image models: {e}")
         return
 
@@ -268,11 +322,17 @@ def check():
 
     # Vision stage needs a chat model that takes images AND honours json_output.
     try:
-        r = requests.get(f"{BASE_URL}/models",
-                         headers=_headers(json_body=False),
-                         params={"model_type": "llm", "supports_vision": "true",
-                                 "supports_json_output": "true", "limit": 20},
-                         timeout=30)
+        r = requests.get(
+            f"{BASE_URL}/models",
+            headers=_headers(json_body=False),
+            params={
+                "model_type": "llm",
+                "supports_vision": "true",
+                "supports_json_output": "true",
+                "limit": 20,
+            },
+            timeout=30,
+        )
         r.raise_for_status()
         payload = r.json()
         rows = payload.get("models", payload if isinstance(payload, list) else [])
@@ -281,24 +341,38 @@ def check():
             name = m.get("name", "?")
             mark = "  <-- active" if name == VISION_MODEL else ""
             print(f"  {m.get('provider', '?')}/{name}{mark}")
-    except Exception as e:                          # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
         print(f"\ncouldn't list chat models: {e}")
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("prompt", nargs="?",
-                    help="the creature's visual description (no style words)")
+    ap.add_argument(
+        "prompt", nargs="?", help="the creature's visual description (no style words)"
+    )
     ap.add_argument("-o", "--out", default="sprite_test.png")
-    ap.add_argument("--model", default=IMAGE_MODEL,
-                    help="override the image model, for A/B testing")
+    ap.add_argument(
+        "--model", default=IMAGE_MODEL, help="override the image model, for A/B testing"
+    )
     ap.add_argument("--resolution", default="1K")
     ap.add_argument("--seed", type=int, default=None)
-    ap.add_argument("--raw", action="store_true",
-                    help="send the prompt bare, skipping the style template "
-                         "(tests the API, NOT sprite quality)")
+    ap.add_argument(
+        "--raw",
+        action="store_true",
+        help="send the prompt bare, skipping the style template "
+        "(tests the API, NOT sprite quality)",
+    )
     ap.add_argument("--check", action="store_true")
+    ap.add_argument(
+        "--find",
+        metavar="SUBSTRING",
+        help="search chat models by name, e.g. --find gemini",
+    )
     args = ap.parse_args()
+
+    if args.find is not None:
+        find_models(args.find)
+        return
 
     if args.check:
         check()
@@ -307,16 +381,24 @@ def main():
         ap.error("give me a description, or use --check")
 
     if args.raw:
-        print("WARNING: --raw skips the style template. The result will have "
-              "no magenta background and stylize.py will not key it out.")
+        print(
+            "WARNING: --raw skips the style template. The result will have "
+            "no magenta background and stylize.py will not key it out."
+        )
 
     t0 = time.time()
-    img = generate_sprite(args.prompt, model=args.model,
-                          resolution=args.resolution, seed=args.seed,
-                          styled=not args.raw)
+    img = generate_sprite(
+        args.prompt,
+        model=args.model,
+        resolution=args.resolution,
+        seed=args.seed,
+        styled=not args.raw,
+    )
     img.save(args.out)
-    print(f"{args.out}  {img.size}  mode={img.mode}  "
-          f"{args.model}  {time.time() - t0:.1f}s")
+    print(
+        f"{args.out}  {img.size}  mode={img.mode}  "
+        f"{args.model}  {time.time() - t0:.1f}s"
+    )
 
 
 if __name__ == "__main__":
