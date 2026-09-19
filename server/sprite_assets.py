@@ -11,7 +11,9 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 
 
 LVGL_IMAGE_MAGIC = 0x19
-LVGL_COLOR_FORMAT_RGB565A8 = 14
+# This is the enum value 0x14 (decimal 20), not decimal 14.  Decimal 14 is
+# LV_COLOR_FORMAT_A8, which makes LVGL interpret the RGB bytes as an alpha map.
+LVGL_COLOR_FORMAT_RGB565A8 = 0x14
 BADGE_SPRITE_SIZE = 32
 _KEY_RE = re.compile(r"^[a-z0-9_-]{3,64}$")
 
@@ -29,6 +31,24 @@ class SpriteStore:
         self.badge_dir = root / "badge"
         self.source_dir.mkdir(parents=True, exist_ok=True)
         self.badge_dir.mkdir(parents=True, exist_ok=True)
+        self.rebuild_badge_assets()
+
+    def rebuild_badge_assets(self) -> None:
+        """Re-encode persisted PNGs when the on-badge binary format changes."""
+
+        for source in self.source_dir.glob("*.png"):
+            try:
+                with Image.open(source) as image:
+                    rgba = ImageOps.fit(
+                        image.convert("RGBA"),
+                        (BADGE_SPRITE_SIZE, BADGE_SPRITE_SIZE),
+                        method=Image.Resampling.LANCZOS,
+                    )
+                self.badge_path(source.stem).write_bytes(to_lvgl_rgb565a8(rgba))
+            except (OSError, SpriteError):
+                # A damaged cache entry should not prevent the API from
+                # starting; the next successful sprite upload replaces it.
+                continue
 
     @staticmethod
     def sprite_key_for(pokemon_id: str) -> str:
@@ -79,13 +99,18 @@ def to_lvgl_rgb565a8(image: Image.Image) -> bytes:
         rgb565.extend(struct.pack("<H", packed))
         alpha.append(opacity)
 
+    # LVGL v9 binary header: u8 magic, u8 color format, then five u16s
+    # (flags, width, height, stride, reserved). It is 12 bytes in total.
+    # The previous encoder had the same length but put fields at wrong offsets,
+    # resulting in a valid image widget with a blank decoded bitmap.
     header = struct.pack(
-        "<IBBHHH",
+        "<BBHHHHH",
         LVGL_IMAGE_MAGIC,
         LVGL_COLOR_FORMAT_RGB565A8,
         0,
         width,
         height,
         width * 2,
+        0,
     )
     return header + rgb565 + alpha

@@ -39,8 +39,9 @@ def encode_lvgl(image: Image.Image) -> bytes:
     for red, green, blue, opacity in canvas.getdata():
         rgb.extend(struct.pack("<H", ((red >> 3) << 11) | ((green >> 2) << 5) | (blue >> 3)))
         alpha.append(opacity)
+    # LVGL v9 header: u8 magic, u8 color format, five u16s.
     return struct.pack(
-        "<IBBHHH", 0x19, 14, 0, SPRITE_SIZE, SPRITE_SIZE, SPRITE_SIZE * 2
+        "<BBHHHHH", 0x19, 0x14, 0, SPRITE_SIZE, SPRITE_SIZE, SPRITE_SIZE * 2, 0
     ) + rgb + alpha
 
 

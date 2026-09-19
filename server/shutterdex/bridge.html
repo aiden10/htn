@@ -16,7 +16,7 @@
 </style>
 <body>
   <h1>Shutterdex badge bridge</h1>
-  <p>Publishes the same Shutterdex snapshot to the separate Dex and Habitat apps. Sprite assets stay in the Dex app folder. Close the Hack the North IDE first: a badge can only be connected to one browser tab at a time.</p>
+  <p>Publishes the same Shutterdex snapshot and a small shared sprite set to the separate Dex and Habitat apps. Close the Hack the North IDE first: a badge can only be connected to one browser tab at a time.</p>
   <div class="controls">
     <label>World <select id="world"><option value="test">Test (Coilkit)</option><option value="live">Live</option></select></label>
     <button id="connect">Connect badge</button>
@@ -24,10 +24,11 @@
     <button id="reset" disabled>Reset test world</button>
     <button id="advance" disabled>Advance world</button>
     <button id="watch" disabled>Start live sync</button>
+    <button id="autorun" disabled>Start habitat autoplay</button>
   </div>
   <div id="status">Not connected.</div>
   <p class="note">Each app receives <code>inbox.tmp</code>, then <code>inbox.ready</code>, so it only accepts a complete revision. Live sync checks for a newer revision every second and only transfers changed snapshots.</p>
-  <p class="note">Test advances use the fast local simulation director for a responsive badge demo. The Live world continues to use the AI director.</p>
+  <p class="note">Test advances use the fast local simulation director for a responsive badge demo. Habitat autoplay advances that test world repeatedly without calling the AI. The Live world continues to use the AI director.</p>
   <pre id="log"></pre>
 <script>
 const APPS = Object.freeze({
@@ -46,8 +47,11 @@ let connected = false;
 let busy = false;
 let liveSyncEnabled = false;
 let liveSyncToken = 0;
+let autoRunEnabled = false;
+let autoRunToken = 0;
+const AUTO_RUN_DELAY_MS = 3500;
 const lastRevision = new Map();
-let sentPokedexSprites = new Set();
+let sentSprites = new Set();
 
 function log(s) { $("log").textContent += s + "\n"; $("log").scrollTop = $("log").scrollHeight; }
 function status(s) { $("status").textContent = s; }
@@ -60,6 +64,7 @@ function updateControls() {
   for (const id of ["publish", "reset", "advance", "watch"]) {
     $(id).disabled = !connected || busy;
   }
+  $("autorun").disabled = !connected || busy || $("world").value !== "test";
 }
 
 function settleSerialWaiters(error) {
@@ -115,9 +120,12 @@ function waitFor(mark, timeout = 12000) {
   });
 }
 async function sendRaw(bytes) {
-  for (let i = 0; i < bytes.length; i += 32) {
-    await send(bytes.slice(i, i + 32));
-    await nap(8);
+  // Native USB/JTAG can accept the console's READY prompt before its raw file
+  // receiver has much buffer available.  Smaller, paced chunks are slower but
+  // prevent a long autoplay stream from losing bytes mid-file.
+  for (let i = 0; i < bytes.length; i += 16) {
+    await send(bytes.slice(i, i + 16));
+    await nap(20);
   }
 }
 function appName(directory) {
@@ -130,10 +138,10 @@ async function put(directory, name, contents) {
   log(`Writing ${appName(directory)}/${name} (${bytes.length} bytes)…`);
   await send(`put ${directory}${name} ${bytes.length}\n`);
   await waitFor("READY", 12000);
-  await nap(350);
+  await nap(750);
   serialText = "";
   await sendRaw(bytes);
-  await waitFor(`OK ${bytes.length}`, 40000);
+  await waitFor(`OK ${bytes.length}`, 60000);
 }
 function spriteKeys(inbox) {
   const keys = new Set();
@@ -146,22 +154,24 @@ function spriteKeys(inbox) {
 function spriteManifest(revision, keys) {
   return `revision=${revision}\n${[...keys].map(key => `sprite|${key}`).join("\n")}\n`;
 }
-async function publishPokedexAssets(inbox, revision) {
+async function publishSpriteAssets(inbox, revision) {
   const readySprites = new Set();
   for (const key of spriteKeys(inbox)) {
-    if (sentPokedexSprites.has(key)) { readySprites.add(key); continue; }
+    if (sentSprites.has(key)) { readySprites.add(key); continue; }
     const response = await fetch(`/sprites/${encodeURIComponent(key)}.bin`, {cache:"no-store"});
     if (!response.ok) {
-      log(`No local sprite for ${key}; Pokédex will use its text fallback.`);
+      log(`No local sprite for ${key}; badge apps will use their text fallback.`);
       continue;
     }
-    await put(APPS.pokedex, `${key}.bin`, new Uint8Array(await response.arrayBuffer()));
-    sentPokedexSprites.add(key);
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    await put(APPS.pokedex, `${key}.bin`, bytes);
+    await put(APPS.habitat, `${key}.bin`, bytes);
+    sentSprites.add(key);
     readySprites.add(key);
   }
-  // Only Pokédex receives sprite files and this manifest. Habitat is deliberately
-  // asset-free so the two apps can stay independently small.
-  await put(APPS.pokedex, "sprites.ready", spriteManifest(revision, readySprites));
+  const manifest = spriteManifest(revision, readySprites);
+  await put(APPS.pokedex, "sprites.ready", manifest);
+  await put(APPS.habitat, "sprites.ready", manifest);
 }
 async function publishSnapshot(directory, data, revision) {
   await put(directory, "inbox.tmp", data.inbox || "");
@@ -204,15 +214,35 @@ async function transferSnapshot(force = false) {
 
   const previousRevision = lastRevision.get(world) ?? -1;
   if (!force && revision <= previousRevision) return false;
-  if (force) sentPokedexSprites.clear();
+  if (force) sentSprites.clear();
 
   status(`Publishing ${world} revision ${revision} to Pokédex and Habitat…`);
-  await publishPokedexAssets(data.inbox || "", revision);
+  await publishSpriteAssets(data.inbox || "", revision);
   await publishSnapshot(APPS.pokedex, data, revision);
   await publishSnapshot(APPS.habitat, data, revision);
   lastRevision.set(world, revision);
   status(`Published ${world} revision ${revision} to both apps.`);
   log("Done.");
+  return true;
+}
+
+async function transferHabitatSnapshot() {
+  // Autoplay has one consumer: Habitat.  Rewriting Pokédex assets and its
+  // snapshot every few seconds adds several serial handshakes without making
+  // its collection view more useful, and was the source of upload timeouts.
+  const data = await snapshot("test");
+  const revisionMatch = (data.ready || "").match(/revision=(\d+)/);
+  const revision = revisionMatch ? Number(revisionMatch[1]) : NaN;
+  if (!Number.isInteger(revision)) throw new Error("Server returned an invalid ready revision.");
+  if (enc.encode(data.inbox || "").length > 12 * 1024) {
+    throw new Error("Snapshot is too large for the badge reader (over 12 KiB).");
+  }
+  status(`Autoplay: publishing Habitat revision ${revision}…`);
+  await publishSnapshot(APPS.habitat, data, revision);
+  // Deliberately do not update lastRevision: a subsequent normal Publish or
+  // live-sync can still bring the Dex up to date without forcing assets now.
+  status(`Autoplay: Habitat revision ${revision} published.`);
+  log("Habitat update done.");
   return true;
 }
 
@@ -245,6 +275,13 @@ function stopLiveSync(announce = true) {
   if (announce) status("Live sync stopped.");
 }
 
+function stopAutoRun(announce = true) {
+  autoRunEnabled = false;
+  autoRunToken += 1;
+  $("autorun").textContent = "Start habitat autoplay";
+  if (announce) status("Habitat autoplay stopped.");
+}
+
 async function liveSyncLoop(token) {
   while (liveSyncEnabled && token === liveSyncToken) {
     const result = await publish(false);
@@ -253,6 +290,34 @@ async function liveSyncLoop(token) {
       return;
     }
     await nap(1000);
+  }
+}
+
+async function advanceAndPublish(world, automatic = false) {
+  status(automatic
+    ? "Habitat autoplay: advancing the local test world…"
+    : (world === "live"
+      ? "Advancing the live world (the AI step can take up to 90 seconds)…"
+      : "Advancing the test world with the local director…"));
+  const response = await fetch(`/advance?world=${encodeURIComponent(world)}`, { method: "POST" });
+  if (!response.ok) throw await requestError(response, "Could not advance the world");
+  const result = await response.json();
+  log(`${automatic ? "Autoplay advanced" : "Advanced"} to revision ${result.world_revision ?? "new"}.`);
+  if (automatic) {
+    await transferHabitatSnapshot();
+  } else {
+    await transferSnapshot(true);
+  }
+}
+
+async function autoRunLoop(token) {
+  while (autoRunEnabled && token === autoRunToken) {
+    const result = await runBadgeOperation(() => advanceAndPublish("test", true));
+    if (result.started && !result.ok) {
+      stopAutoRun(false);
+      return;
+    }
+    await nap(AUTO_RUN_DELAY_MS);
   }
 }
 
@@ -268,7 +333,7 @@ $("connect").onclick = async () => {
     reader = port.readable.getReader();
     serialText = "";
     serialPump = startSerialPump();
-    sentPokedexSprites.clear();
+    sentSprites.clear();
     status("Waiting for badge console…");
     await nap(2000);
     serialText = "";
@@ -305,17 +370,7 @@ $("reset").onclick = () => {
 };
 
 $("advance").onclick = () => {
-  void runBadgeOperation(async () => {
-    const world = $("world").value;
-    status(world === "live"
-      ? "Advancing the live world (the AI step can take up to 90 seconds)…"
-      : "Advancing the test world with the local director…");
-    const response = await fetch(`/advance?world=${encodeURIComponent(world)}`, { method: "POST" });
-    if (!response.ok) throw await requestError(response, "Could not advance the world");
-    const result = await response.json();
-    log(`Advanced to revision ${result.world_revision ?? "new"}.`);
-    await transferSnapshot(true);
-  });
+  void runBadgeOperation(() => advanceAndPublish($("world").value));
 };
 
 $("watch").onclick = () => {
@@ -323,6 +378,7 @@ $("watch").onclick = () => {
     stopLiveSync();
     return;
   }
+  stopAutoRun(false);
   liveSyncEnabled = true;
   const token = ++liveSyncToken;
   $("watch").textContent = "Stop live sync";
@@ -330,8 +386,27 @@ $("watch").onclick = () => {
   void liveSyncLoop(token);
 };
 
+$("autorun").onclick = () => {
+  if (autoRunEnabled) {
+    stopAutoRun();
+    return;
+  }
+  if ($("world").value !== "test") {
+    status("Habitat autoplay is available for the Test world only.");
+    return;
+  }
+  stopLiveSync(false);
+  autoRunEnabled = true;
+  const token = ++autoRunToken;
+  $("autorun").textContent = "Stop habitat autoplay";
+  status("Habitat autoplay started.");
+  void autoRunLoop(token);
+};
+
 $("world").onchange = () => {
+  if ($("world").value !== "test" && autoRunEnabled) stopAutoRun(false);
   status(`Selected ${$("world").value} world.`);
+  updateControls();
 };
 
 updateControls();

@@ -119,9 +119,9 @@ class BadgeSerialBridge:
 
     def _write_raw_file(self, payload: bytes) -> None:
         """Feed the small native-USB console buffer without overflowing it."""
-        for start in range(0, len(payload), 32):
-            self._write(payload[start : start + 32])
-            time.sleep(0.008)
+        for start in range(0, len(payload), 16):
+            self._write(payload[start : start + 16])
+            time.sleep(0.02)
 
     def _wait_for_console_start(self, timeout_seconds: float) -> None:
         """Wait through a reset, but also allow an already-running console."""

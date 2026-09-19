@@ -449,8 +449,14 @@ class SimulationService:
         }[kind]
         energy_cost = {"observe": 1, "greet": 2, "play": 7, "challenge": 6, "rest": -12}[kind]
         actor_state.energy = _bounded(actor_state.energy - energy_cost, 0, 100)
-        actor_state.x = _bounded(actor_state.x + (5 if target else 2), 0, 100)
-        actor_state.y = _bounded(actor_state.y + (2 if kind == "play" else -1), 0, 100)
+        # A badge snapshot is only published every few seconds, so a tiny
+        # coordinate nudge reads as jitter rather than travel.  Keep movement
+        # inside the habitat, but make each committed simulation beat visibly
+        # distinct and turn before an actor reaches the edge.
+        actor_dx = -16 if actor_state.x >= 82 else 14
+        actor_dy = -10 if actor_state.y >= 78 else 8
+        actor_state.x = _bounded(actor_state.x + actor_dx, 8, 92)
+        actor_state.y = _bounded(actor_state.y + actor_dy, 12, 88)
 
         relationship = _relationship_for(
             world, actor.pokemon_id, target.pokemon_id if target else ""
@@ -459,7 +465,10 @@ class SimulationService:
             target_state.updated_at = now
             target_state.activity = "talking with " + actor.name if kind == "greet" else target_state.activity
             target_state.mood = "engaged" if kind in {"greet", "play"} else target_state.mood
-            target_state.x = _bounded(target_state.x - 3, 0, 100)
+            target_dx = 14 if target_state.x <= 18 else -12
+            target_dy = 8 if target_state.y <= 20 else -6
+            target_state.x = _bounded(target_state.x + target_dx, 8, 92)
+            target_state.y = _bounded(target_state.y + target_dy, 12, 88)
         if relationship:
             relationship.friendship = _bounded(
                 relationship.friendship + decision.bond_delta, -100, 100

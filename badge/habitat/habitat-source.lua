@@ -8,17 +8,17 @@ wake_lock=1
 ]==]
 
 -- Shutterdex Habitat
--- Reads the same atomic snapshot as the other badge apps.  It deliberately
--- uses coloured monograms instead of decoded image assets so it remains a
--- small, dependable live view on the badge.
+-- Reads the same atomic snapshot as the other badge apps.  Sprite files and
+-- their small manifest are committed before the snapshot, so an unavailable
+-- image can safely use the coloured-monogram fallback instead.
 
 local MAX_VISIBLE = 4
 local POLL_MS = 800
 local FRAME_MS = 80
--- A server tick can only change a position by a few world units.  Keep the
--- arrival animation long enough, and add a small walking bob, so that a new
--- event is unmistakably visible on the physical badge screen.
-local MIN_TRAVEL_MS = 2600
+-- The bridge's Test autoplay delivers a new destination every few seconds.
+-- Keep travelling until the following update arrives, then retarget from the
+-- current drawn position instead of stopping or snapping.
+local MIN_TRAVEL_MS = 8000
 
 local C = {
   bg = 0x0d1912, panel = 0x193425, border = 0x608a70,
@@ -33,12 +33,12 @@ local TYPE = {
 }
 
 local world = {
-  revision = -1, pokemon = {}, states = {}, motions = {},
+  revision = -1, pokemon = {}, states = {}, motions = {}, sprites = {},
   latest = nil, selected = 1, positions = {}, next_poll = 0, next_frame = 0,
   travel_notice = "WAITING FOR A WORLD", travel_active = false, shown_notice = nil,
 }
 
-local ui = {actors = {}}
+local ui = {actors = {}, root = nil}
 
 local function read(path)
   return badge.fs.read(path) or ""
@@ -97,6 +97,23 @@ local function point(state, motion)
          clamp(47 + math.floor(y * 0.78), 47, 143)
 end
 
+local function read_sprites(expected_revision)
+  local text = read("sprites.ready")
+  if revision(text) ~= expected_revision then return {} end
+  local available = {}
+  for line in string.gmatch(text, "[^\r\n]+") do
+    local key = string.match(line, "^sprite|([^|\r\n]+)")
+    if key then available[key] = true end
+  end
+  return available
+end
+
+local function same_sprites(first, second)
+  for key in pairs(first) do if not second[key] then return false end end
+  for key in pairs(second) do if not first[key] then return false end end
+  return true
+end
+
 local function parse_snapshot(text, expected)
   if revision(text) ~= expected then return nil end
   local next = {pokemon = {}, states = {}, motions = {}, latest = nil}
@@ -104,7 +121,9 @@ local function parse_snapshot(text, expected)
   for line in string.gmatch(text, "[^\r\n]+") do
     local f = fields(line)
     if f[1] == "pokemon" and #next.pokemon < MAX_VISIBLE and f[2] ~= "" then
-      next.pokemon[#next.pokemon + 1] = {id = f[2], name = f[3], element = f[6]}
+      next.pokemon[#next.pokemon + 1] = {
+        id = f[2], name = f[3], element = f[6], sprite = f[12],
+      }
     elseif f[1] == "state" and f[2] ~= "" then
       next.states[f[2]] = {x = number(f[3], 50), y = number(f[4], 50), activity = f[7]}
     elseif f[1] == "motion" and f[2] ~= "" then
@@ -122,11 +141,11 @@ local function parse_snapshot(text, expected)
   return next
 end
 
-local function install(next, rev)
+local function install(next, rev, sprites)
   local now = badge.sys.ms()
   local old_states = world.states
   world.pokemon, world.states = next.pokemon, next.states
-  world.motions, world.latest, world.revision = next.motions, next.latest, rev
+  world.motions, world.latest, world.revision, world.sprites = next.motions, next.latest, rev, sprites
   world.travel_notice = "WORLD UPDATED"
   world.travel_active = false
   if world.selected > #world.pokemon then world.selected = 1 end
@@ -167,12 +186,18 @@ end
 local function load()
   local before = revision(read("inbox.ready"))
   if not before then return false end
+  if before == world.revision then
+    local refreshed = read_sprites(before)
+    if same_sprites(world.sprites, refreshed) then return false end
+    world.sprites = refreshed
+    return true
+  end
   local text = read("inbox.tmp")
   local after = revision(read("inbox.ready"))
-  if before ~= after or revision(text) ~= before or before == world.revision then return false end
+  if before ~= after or revision(text) ~= before then return false end
   local next = parse_snapshot(text, before)
   if not next then return false end
-  install(next, before)
+  install(next, before, read_sprites(before))
   return true
 end
 
@@ -207,10 +232,11 @@ local function actor(root)
   local name = label(tag, 2, 0, 52, 14, "", {
     text_font = 14, text_color = C.text, text_align = "center",
   })
-  return {trail = trail, dot = dot, initials = initials, tag = tag, name = name}
+  return {trail = trail, dot = dot, initials = initials, tag = tag, name = name, picture = nil, picture_key = nil}
 end
 
 local function build(root)
+  ui.root = root
   box(root, 0, 0, 320, 240, {bg_color = C.bg, border_width = 0})
   ui.title = label(root, 10, 9, 180, 22, "HABITAT", {text_font = 20, text_color = C.text})
   ui.status = label(root, 180, 12, 130, 14, "SYNC --", {
@@ -244,6 +270,7 @@ local function hide(actor)
   actor.trail:hidden(true)
   actor.dot:hidden(true)
   actor.tag:hidden(true)
+  if actor.picture then actor.picture:hidden(true) end
 end
 
 local function name_for(id)
@@ -253,15 +280,34 @@ local function name_for(id)
   return "Someone"
 end
 
+local function show_sprite(actor, key, x, y)
+  if not key or not world.sprites[key] then return false end
+  if not actor.picture then
+    actor.picture = badge.ui.image(ui.root, key .. ".bin")
+    actor.picture_key = key
+  elseif actor.picture_key ~= key then
+    actor.picture:set_src(key .. ".bin")
+    actor.picture_key = key
+  end
+  actor.picture:set_pos(x, y)
+  actor.picture:set_size(28, 28)
+  actor.picture:hidden(false)
+  actor.picture:bring_to_front()
+  return true
+end
+
 local function draw_actor(index, mon, position, walking)
   local item = ui.actors[index]
   local x, y = math.floor(position.x), math.floor(position.y)
-  local bob = walking and ((math.floor((badge.sys.ms() - position.started) / 150) % 2 == 0) and -4 or 2) or 0
+  -- The old 6px step bob overwhelmed small travel distances and looked like
+  -- jitter. Position interpolation itself is the movement now.
+  local bob = 0
   local trail_width = math.floor(clamp(math.abs(x - position.start_x) + 8, 8, 42))
   item.trail:set_pos(clamp(math.min(x, position.start_x) + 10, 10, 300 - trail_width), y + 12)
   item.trail:set_size(trail_width, 4)
   item.trail:set_color(color_for(mon.element))
   item.trail:hidden(not walking)
+  local has_sprite = show_sprite(item, mon.sprite, x, y + bob)
   item.dot:set_pos(x, y + bob)
   item.dot:set_color(color_for(mon.element))
   item.initials:set_text(string.upper(string.sub(mon.name or "?", 1, 2)))
@@ -270,7 +316,7 @@ local function draw_actor(index, mon, position, walking)
   local selected = index == world.selected
   item.tag:set_color(selected and C.accent or C.panel)
   item.tag:set_border(selected and C.text or C.border, selected and 2 or 1)
-  item.dot:hidden(false)
+  item.dot:hidden(has_sprite)
   item.tag:hidden(false)
   item.tag:bring_to_front()
 end
