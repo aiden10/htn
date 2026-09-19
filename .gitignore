@@ -3,3 +3,4 @@ __pycache__
 server/data/
 server/uploads/
 server/.env
+image-processing/gamedata/
