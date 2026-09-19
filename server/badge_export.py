@@ -6,6 +6,24 @@ from pathlib import Path
 
 from models import WorldSnapshot
 
+MAX_BADGE_POKEMON = 16
+MAX_BADGE_EVENTS = 4
+
+
+def motion_duration_ms(activity: str) -> int:
+    """Give the badge a pleasant interpolation time for the current action."""
+
+    activity = activity.lower()
+    if "play" in activity:
+        return 700
+    if "challenge" in activity or "testing" in activity:
+        return 900
+    if "conversation" in activity or "talking" in activity:
+        return 1100
+    if "breather" in activity or "rest" in activity:
+        return 2200
+    return 1400
+
 
 def record_field(value: object, limit: int = 160) -> str:
     """Make a value safe for one pipe-delimited, one-line badge record."""
@@ -18,24 +36,26 @@ def badge_snapshot_text(world: WorldSnapshot) -> str:
     """Return the complete snapshot which must be written before inbox.ready."""
 
     lines = [f"revision={world.revision}"]
-    for pokemon in world.pokemon:
+    # The Lua reader has a 16 KiB file-read limit. These caps keep a complete
+    # Habitat snapshot comfortably below it without sending unused relations.
+    for pokemon in world.pokemon[:MAX_BADGE_POKEMON]:
         state = world.states.get(pokemon.pokemon_id)
         sprite_key = pokemon.sprite_key or f"{pokemon.pokemon_id}_v1"
         lines.append(
             "pokemon|" + "|".join(
                 [
-                    record_field(pokemon.pokemon_id, 48),
-                    record_field(pokemon.name, 48),
+                    record_field(pokemon.pokemon_id, 32),
+                    record_field(pokemon.name, 32),
                     pokemon.caught_at.date().isoformat(),
-                    record_field(pokemon.species, 80),
-                    record_field(pokemon.element, 32),
+                    record_field(pokemon.species, 48),
+                    record_field(pokemon.element, 16),
                     str(pokemon.stats.hp),
                     str(pokemon.stats.attack),
                     str(pokemon.stats.defense),
                     str(pokemon.stats.speed),
-                    record_field(pokemon.rarity, 16),
-                    record_field(pokemon.flavour, 160),
-                    record_field(sprite_key, 64),
+                    record_field(pokemon.rarity, 12),
+                    record_field(pokemon.flavour, 72),
+                    record_field(sprite_key, 48),
                 ]
             )
         )
@@ -43,39 +63,40 @@ def badge_snapshot_text(world: WorldSnapshot) -> str:
             lines.append(
                 "state|" + "|".join(
                     [
-                        record_field(pokemon.pokemon_id, 48),
+                        record_field(pokemon.pokemon_id, 32),
                         str(state.x),
                         str(state.y),
-                        record_field(state.mood, 32),
+                        record_field(state.mood, 24),
                         str(state.energy),
-                        record_field(state.activity, 48),
+                        record_field(state.activity, 36),
+                    ]
+                )
+            )
+            # `state` stays backward-compatible. Newer Habitat clients use
+            # this separate record as the next logical destination.
+            lines.append(
+                "motion|" + "|".join(
+                    [
+                        record_field(pokemon.pokemon_id, 32),
+                        str(state.x),
+                        str(state.y),
+                        str(motion_duration_ms(state.activity)),
                     ]
                 )
             )
 
-    for relationship in world.relationships:
-        lines.append(
-            "relationship|" + "|".join(
-                [
-                    record_field(relationship.first_id, 48),
-                    record_field(relationship.second_id, 48),
-                    str(relationship.friendship),
-                    str(relationship.rivalry),
-                ]
-            )
-        )
-
-    # The badge app renders the newest event last and limits itself to 12.
-    for event in world.events[-12:]:
+    # Relationship records are intentionally omitted: the current badge UI
+    # never consumes them, while recent dialogue is materially more useful.
+    for event in world.events[-MAX_BADGE_EVENTS:]:
         lines.append(
             "event|" + "|".join(
                 [
-                    record_field(event.event_id, 48),
+                    record_field(event.event_id, 32),
                     str(event.revision),
-                    record_field(event.actor_id, 48),
-                    record_field(event.target_id, 48),
-                    record_field(event.kind, 32),
-                    record_field(event.summary, 160),
+                    record_field(event.actor_id, 32),
+                    record_field(event.target_id, 32),
+                    record_field(event.kind, 24),
+                    record_field(event.summary, 88),
                 ]
             )
         )
@@ -83,9 +104,9 @@ def badge_snapshot_text(world: WorldSnapshot) -> str:
             lines.append(
                 "dialogue|" + "|".join(
                     [
-                        record_field(event.event_id, 48),
-                        record_field(dialogue.speaker_id, 48),
-                        record_field(dialogue.text, 160),
+                        record_field(event.event_id, 32),
+                        record_field(dialogue.speaker_id, 32),
+                        record_field(dialogue.text, 72),
                     ]
                 )
             )

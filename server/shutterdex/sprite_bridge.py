@@ -1,4 +1,4 @@
-"""Local Web Serial bridge with bundled 40x40 PokeLife sprites.
+"""Local Web Serial bridge with bundled 28x28 Shutterdex sprites.
 
 Run alongside the existing FastAPI server, then open http://127.0.0.1:8765.
 """
@@ -11,7 +11,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 from PIL import Image, ImageOps
 
@@ -24,17 +24,24 @@ SPRITES = {
     "test_coilkit_v1": "coilkit-v1.png",
     "test_mossbyte_v1": "mossbyte-v1.png",
 }
+SPRITE_SIZE = 28
 
 
 def encode_lvgl(image: Image.Image) -> bytes:
-    canvas = Image.new("RGBA", (40, 40))
-    scaled = ImageOps.contain(image.convert("RGBA"), (40, 40), Image.Resampling.LANCZOS)
-    canvas.alpha_composite(scaled, ((40 - scaled.width) // 2, (40 - scaled.height) // 2))
+    canvas = Image.new("RGBA", (SPRITE_SIZE, SPRITE_SIZE))
+    scaled = ImageOps.contain(
+        image.convert("RGBA"), (SPRITE_SIZE, SPRITE_SIZE), Image.Resampling.LANCZOS
+    )
+    canvas.alpha_composite(
+        scaled, ((SPRITE_SIZE - scaled.width) // 2, (SPRITE_SIZE - scaled.height) // 2)
+    )
     rgb, alpha = bytearray(), bytearray()
     for red, green, blue, opacity in canvas.getdata():
         rgb.extend(struct.pack("<H", ((red >> 3) << 11) | ((green >> 2) << 5) | (blue >> 3)))
         alpha.append(opacity)
-    return struct.pack("<IBBHHH", 0x19, 14, 0, 40, 40, 80) + rgb + alpha
+    return struct.pack(
+        "<IBBHHH", 0x19, 14, 0, SPRITE_SIZE, SPRITE_SIZE, SPRITE_SIZE * 2
+    ) + rgb + alpha
 
 
 def make_sprites() -> None:
@@ -85,12 +92,51 @@ class Handler(SimpleHTTPRequestHandler):
                 pass
         self.send_error(404)
 
+    def do_POST(self) -> None:  # noqa: N802
+        parsed = urlparse(self.path)
+        if parsed.path == "/reset-test":
+            request = Request(
+                f"{self.server_base}/simulation/test/reset",
+                data=b"{}",
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                with urlopen(request, timeout=15) as response:
+                    return self.send_bytes(response.read(), "application/json")
+            except OSError as exc:
+                self.send_error(502, f"Could not reset test world: {exc}")
+                return
+
+        if parsed.path != "/advance":
+            self.send_error(404)
+            return
+
+        world = parse_qs(parsed.query).get("world", ["test"])[0]
+        is_live_world = world == "live"
+        endpoint = "/simulation/tick" if is_live_world else "/simulation/test/tick"
+        # Test advances drive the visible badge demo with the local director,
+        # rather than waiting for a Backboard response.  The real/live world
+        # continues to use the configured AI director.
+        payload = b"{}" if is_live_world else b'{"prefer_jev": false}'
+        request = Request(
+            f"{self.server_base}{endpoint}",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=90 if is_live_world else 15) as response:
+                return self.send_bytes(response.read(), "application/json")
+        except OSError as exc:
+            self.send_error(502, f"Could not advance simulation: {exc}")
+
     def log_message(self, *_: object) -> None:
         pass
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Serve the PokeLife Web Serial bridge.")
+    parser = argparse.ArgumentParser(description="Serve the Shutterdex Web Serial bridge.")
     parser.add_argument("--server", default="http://127.0.0.1:8000")
     args = parser.parse_args()
     make_sprites()

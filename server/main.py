@@ -243,6 +243,27 @@ async def run_simulation_test(
     }
 
 
+@app.post("/simulation/test/tick", tags=["simulation test"])
+async def tick_simulation_test(
+    request: Request, body: SimulationTickRequest | None = None
+) -> dict[str, object]:
+    """Advance the persistent dummy world once without resetting its story."""
+
+    service = test_simulation_service(request)
+    if not (await service.snapshot()).pokemon:
+        await service.reset_test_world()
+    world, event, decision = await service.tick(
+        prefer_jev=True if body is None else body.prefer_jev
+    )
+    return {
+        "isolated_test_world": True,
+        "director_used": decision.source,
+        "director_note": decision.note,
+        "event": event.model_dump(mode="json"),
+        "world_revision": world.revision,
+    }
+
+
 @app.get(
     "/simulation/test/world",
     response_model=WorldSnapshot,
