@@ -38,7 +38,10 @@ local world = {
   travel_notice = "WAITING FOR A WORLD", travel_active = false, shown_notice = nil,
 }
 
-local ui = {actors = {}, root = nil}
+-- Keep exactly one native LVGL image object.  Each decoded .bin uses native
+-- heap outside Lua's reported table/string total, so one selected sprite is
+-- dependable while four concurrent image decoders are not.
+local ui = {actors = {}, root = nil, picture = nil, picture_key = nil}
 
 local function read(path)
   return badge.fs.read(path) or ""
@@ -232,7 +235,7 @@ local function actor(root)
   local name = label(tag, 2, 0, 52, 14, "", {
     text_font = 14, text_color = C.text, text_align = "center",
   })
-  return {trail = trail, dot = dot, initials = initials, tag = tag, name = name, picture = nil, picture_key = nil}
+  return {trail = trail, dot = dot, initials = initials, tag = tag, name = name}
 end
 
 local function build(root)
@@ -270,7 +273,6 @@ local function hide(actor)
   actor.trail:hidden(true)
   actor.dot:hidden(true)
   actor.tag:hidden(true)
-  if actor.picture then actor.picture:hidden(true) end
 end
 
 local function name_for(id)
@@ -280,19 +282,26 @@ local function name_for(id)
   return "Someone"
 end
 
-local function show_sprite(actor, key, x, y)
-  if not key or not world.sprites[key] then return false end
-  if not actor.picture then
-    actor.picture = badge.ui.image(ui.root, key .. ".bin")
-    actor.picture_key = key
-  elseif actor.picture_key ~= key then
-    actor.picture:set_src(key .. ".bin")
-    actor.picture_key = key
+local function hide_selected_sprite()
+  if ui.picture then ui.picture:hidden(true) end
+end
+
+local function show_selected_sprite(key, x, y)
+  if not key or not world.sprites[key] then
+    hide_selected_sprite()
+    return false
   end
-  actor.picture:set_pos(x, y)
-  actor.picture:set_size(28, 28)
-  actor.picture:hidden(false)
-  actor.picture:bring_to_front()
+  if not ui.picture then
+    ui.picture = badge.ui.image(ui.root, key .. ".bin")
+    ui.picture_key = key
+  elseif ui.picture_key ~= key then
+    ui.picture:set_src(key .. ".bin")
+    ui.picture_key = key
+  end
+  ui.picture:set_pos(x, y)
+  ui.picture:set_size(28, 28)
+  ui.picture:hidden(false)
+  ui.picture:bring_to_front()
   return true
 end
 
@@ -307,7 +316,7 @@ local function draw_actor(index, mon, position, walking)
   item.trail:set_size(trail_width, 4)
   item.trail:set_color(color_for(mon.element))
   item.trail:hidden(not walking)
-  local has_sprite = show_sprite(item, mon.sprite, x, y + bob)
+  local has_sprite = index == world.selected and show_selected_sprite(mon.sprite, x, y + bob)
   item.dot:set_pos(x, y + bob)
   item.dot:set_color(color_for(mon.element))
   item.initials:set_text(string.upper(string.sub(mon.name or "?", 1, 2)))
@@ -349,6 +358,7 @@ end
 
 local function draw()
   ui.status:set_text("SYNC " .. math.max(world.revision, 0))
+  if #world.pokemon == 0 then hide_selected_sprite() end
   for i = 1, MAX_VISIBLE do
     local mon = world.pokemon[i]
     if mon then draw_actor(i, mon, world.positions[mon.id]) else hide(ui.actors[i]) end
