@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from datetime import timedelta
 from hashlib import sha256
 from pathlib import Path
 import sys
@@ -429,6 +430,196 @@ class WifiRuntimeTests(unittest.IsolatedAsyncioTestCase):
         saved = self.store.get_session(badge.badge_id)
         assert saved is not None
         self.assertEqual(saved.app_state["habitat"]["background_index"], 1)
+
+    async def test_battle_handshake_presents_shared_state_and_locks_inputs(self) -> None:
+        """Both badges see one handshake and a move locks both before Writer work."""
+
+        player_a = self.store.create_player("Player A", player_id="player_a")
+        player_b = self.store.create_player("Player B", player_id="player_b")
+        badge_a = await self.runtime.pair_badge(
+            player_id=player_a.player_id, htn_id="a1b2c", app_key="key-a"
+        )
+        badge_b = await self.runtime.pair_badge(
+            player_id=player_b.player_id, htn_id="d3e4f", app_key="key-b"
+        )
+
+        def battle_mon(pokemon_id: str, owner: str, name: str):
+            return pokemon_from_dict(
+                {
+                    "pokemon_id": pokemon_id,
+                    "name": name,
+                    "species": "battle test creature",
+                    "type": "electric",
+                    "stats": {"hp": 55, "attack": 61, "defense": 49, "speed": 72},
+                    "moves": ["spark_dash", "coil_guard", "gear_jolt", "static_field"],
+                    "battle_natures": ["conductive", "clockwork"],
+                    "flavour": "Exists only to verify shared battle rendering.",
+                    "sprite_prompt": "small battle test creature",
+                    "rarity": "common",
+                },
+                owner_player_id=owner,
+            )
+
+        self.store.create_pokemon(battle_mon("mon_a", player_a.player_id, "Aster"))
+        self.store.create_pokemon(battle_mon("mon_b", player_b.player_id, "Boulder"))
+        battle = self.store.create_battle_challenge(
+            player_a.player_id,
+            player_b.player_id,
+            challenger_badge_id=badge_a.badge_id,
+            opponent_badge_id=badge_b.badge_id,
+        )
+        actions: list[tuple[str, str]] = []
+        release_move = asyncio.Event()
+
+        async def battle_action(
+            player_id: str, battle_id: str | None, action: str, move_index: int | None
+        ):
+            assert battle_id == battle.battle_id
+            actions.append((player_id, action))
+            current = self.store.require_battle(battle_id)
+            if action in {"accept_challenge", "ready"}:
+                return self.store.mark_battle_ready(
+                    battle_id,
+                    player_id,
+                    turn_deadline_at=current.updated_at + timedelta(minutes=1),
+                )
+            if action == "select_move":
+                await release_move.wait()
+            return current
+
+        self.runtime._on_battle_action = battle_action
+        await self.runtime.launch(badge_a.htn_id)
+        await self.runtime.launch(badge_b.htn_id)
+        await self.runtime.present_battle(battle)
+        await self._wait_until(lambda: not self.runtime._delivery_tasks)
+        self.assertEqual(self.store.get_session(badge_a.badge_id).active_app, "battle")
+        self.assertEqual(self.store.get_session(badge_b.badge_id).active_app, "battle")
+
+        # The opponent accepts first. Its A input immediately locks locally;
+        # when the small state transition completes both badges see ready.
+        accepted = await self.runtime.handle_button(badge_b.htn_id, "a")
+        self.assertIsNotNone(accepted)
+        self.assertIsNone(await self.runtime.handle_button(badge_b.htn_id, "left"))
+        await self._wait_until(lambda: not self.runtime._battle_action_tasks)
+
+        await self._wait_until(lambda: not self.runtime._delivery_tasks)
+        self.assertEqual(self.store.require_battle(battle.battle_id).status, "ready")
+        self.assertIn((player_b.player_id, "accept_challenge"), actions)
+
+        await self.runtime.handle_button(badge_a.htn_id, "a")
+        await self._wait_until(lambda: not self.runtime._battle_action_tasks)
+        await self._wait_until(lambda: not self.runtime._delivery_tasks)
+        active = self.store.require_battle(battle.battle_id)
+        self.assertEqual(active.status, "active")
+        self.assertEqual(active.current_player_id, player_a.player_id)
+        self.assertEqual(
+            self.runtime._context_for_badge(badge_b).battle.active_player_id,
+            player_a.player_id,
+        )
+
+        # A move submission immediately locks both selected battle badges,
+        # including the Writer-drafting interval before SQLite can durably
+        # change the battle status to ``resolving``.
+        submitted = await self.runtime.handle_button(badge_a.htn_id, "a")
+        self.assertIsNotNone(submitted)
+        self.assertIsNone(await self.runtime.handle_button(badge_a.htn_id, "down"))
+        self.assertIsNone(await self.runtime.handle_button(badge_a.htn_id, "b"))
+        await asyncio.sleep(0)
+        self.assertTrue(self.runtime._context_for_badge(badge_b).battle.input_locked)
+        other_badge = await self.runtime.handle_button(badge_b.htn_id, "left")
+        self.assertIsNone(other_badge)
+        release_move.set()
+        await self._wait_until(lambda: not self.runtime._battle_action_tasks)
+
+    async def test_two_waiting_badges_reciprocally_select_each_other_without_http(self) -> None:
+        """The Battle lobby creates and readies a shared match from button input."""
+
+        player_a = self.store.create_player("Player A", player_id="player_a")
+        player_b = self.store.create_player("Player B", player_id="player_b")
+        badge_a = await self.runtime.pair_badge(
+            player_id=player_a.player_id, htn_id="a1b2c", app_key="key-a"
+        )
+        badge_b = await self.runtime.pair_badge(
+            player_id=player_b.player_id, htn_id="d3e4f", app_key="key-b"
+        )
+
+        def battle_mon(pokemon_id: str, owner: str, name: str):
+            return pokemon_from_dict(
+                {
+                    "pokemon_id": pokemon_id,
+                    "name": name,
+                    "species": "battle test creature",
+                    "type": "electric",
+                    "stats": {"hp": 55, "attack": 61, "defense": 49, "speed": 72},
+                    "moves": ["spark_dash", "coil_guard", "gear_jolt", "static_field"],
+                    "battle_natures": ["conductive", "clockwork"],
+                    "flavour": "Exists only to verify the reciprocal lobby.",
+                    "sprite_prompt": "small battle test creature",
+                    "rarity": "common",
+                },
+                owner_player_id=owner,
+            )
+
+        self.store.create_pokemon(battle_mon("mon_lobby_a", player_a.player_id, "Aster"))
+        self.store.create_pokemon(battle_mon("mon_lobby_b", player_b.player_id, "Boulder"))
+
+        async def reciprocal_selection(
+            player_id: str, badge_id: str, opponent_htn_id: str
+        ):
+            source = self.store.require_badge(badge_id)
+            target = self.store.require_badge_by_htn_id(opponent_htn_id)
+            source_session = self.store.get_session(source.badge_id)
+            target_session = self.store.get_session(target.badge_id)
+            assert source_session is not None and target_session is not None
+            if (
+                source_session.app_state["battle"].get("challenge_target") != target.htn_id
+                or target_session.app_state["battle"].get("challenge_target") != source.htn_id
+            ):
+                return None
+            battle = self.store.create_battle_challenge(
+                player_id,
+                target.player_id,
+                challenger_badge_id=source.badge_id,
+                opponent_badge_id=target.badge_id,
+            )
+            battle = self.store.mark_battle_ready(
+                battle.battle_id,
+                player_id,
+                turn_deadline_at=battle.updated_at + timedelta(minutes=1),
+            )
+            return self.store.mark_battle_ready(
+                battle.battle_id,
+                target.player_id,
+                turn_deadline_at=battle.updated_at + timedelta(minutes=1),
+            )
+
+        self.runtime._on_battle_discovery_select = reciprocal_selection
+        await self.runtime.launch(badge_a.htn_id)
+        await self.runtime.launch(badge_b.htn_id)
+        # Home lists Dex, Habitat, then Battle.
+        for badge in (badge_a, badge_b):
+            await self.runtime.handle_button(badge.htn_id, "down")
+            await self.runtime.handle_button(badge.htn_id, "down")
+            await self.runtime.handle_button(badge.htn_id, "a")
+        await self._wait_until(lambda: self.runtime._context_for_badge(badge_a).battle_opponents)
+        self.assertEqual(
+            self.runtime._context_for_badge(badge_a).battle_opponents[0].htn_id,
+            badge_b.htn_id,
+        )
+
+        # The first choice only records consent. The second reciprocal choice
+        # creates and automatically readies the one shared battle.
+        await self.runtime.handle_button(badge_a.htn_id, "a")
+        await self._wait_until(lambda: not self.runtime._battle_action_tasks)
+        self.assertIsNone(self.store.get_open_battle_for_player(player_a.player_id))
+        await self.runtime.handle_button(badge_b.htn_id, "a")
+        await self._wait_until(lambda: not self.runtime._battle_action_tasks)
+        battle = self.store.get_open_battle_for_player(player_a.player_id)
+        assert battle is not None
+        self.assertEqual(battle.status, "active")
+        self.assertEqual(battle.current_player_id, player_b.player_id)
+        self.assertEqual(self.store.get_session(badge_a.badge_id).active_app, "battle")
+        self.assertEqual(self.store.get_session(badge_b.badge_id).active_app, "battle")
 
 
 if __name__ == "__main__":

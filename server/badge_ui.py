@@ -14,7 +14,7 @@ to share between connections; all user-specific state belongs in
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 import json
 from typing import Any, Iterable, Literal, Mapping, Sequence, TypeAlias
@@ -284,6 +284,155 @@ class WorldEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class BattleOpponent:
+    """One other badge currently waiting in the Battle lobby.
+
+    The HTN ID is deliberately the visible identifier here.  It is what a
+    person can compare with the small ID shown on another physical badge, and
+    it avoids exposing any app credential or internal player identifier.
+    """
+
+    htn_id: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.htn_id, str) or not self.htn_id.strip():
+            raise ValueError("A Battle opponent needs a non-empty HTN ID.")
+
+
+BattlePhase: TypeAlias = Literal[
+    "idle",
+    "challenge",
+    "ready",
+    "waiting",
+    "active",
+    "resolving",
+    "winner",
+    "finished",
+    "cancelled",
+    "disconnected",
+    "timed_out",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class BattleCombatantView:
+    """The presentation-safe active-Pokemon snapshot for one battle side.
+
+    Battle persistence owns the authoritative roster snapshot and current HP.
+    This deliberately contains only the one active Pokemon the badge needs to
+    draw.  The service can replace the object after a faint/switch without
+    asking the UI to calculate combat, inspect a database, or mutate a roster.
+    """
+
+    pokemon_id: str
+    name: str
+    element: str
+    hp: int
+    max_hp: int
+    moves: tuple[str, ...] = ()
+    sprite_url: str | None = None
+    roster_index: int = 0
+    roster_size: int = 1
+    fainted: bool = False
+
+    def __post_init__(self) -> None:
+        if not self.pokemon_id.strip() or not self.name.strip():
+            raise ValueError("A battle combatant needs an id and name.")
+        if self.max_hp <= 0:
+            raise ValueError("A battle combatant max_hp must be positive.")
+        if self.hp < 0:
+            raise ValueError("A battle combatant hp cannot be negative.")
+        if self.roster_index < 0 or self.roster_size <= 0 or self.roster_index >= self.roster_size:
+            raise ValueError("Battle roster position must be within its roster size.")
+        if len(self.moves) > 4:
+            raise ValueError("A battle combatant can expose at most four moves.")
+
+    @property
+    def hp_ratio(self) -> float:
+        """A safely bounded ratio for drawing a health bar."""
+
+        return max(0.0, min(1.0, self.hp / self.max_hp))
+
+
+@dataclass(frozen=True, slots=True)
+class BattleView:
+    """Read-only, per-badge projection of an authoritative shared battle.
+
+    The store/service layer maps its challenger/opponent record into a view
+    relative to the badge being rendered: ``viewer_*`` always means the
+    currently connected player, and ``opponent_*`` means the other side.
+    ``phase`` accepts the battle service's public lifecycle names; the UI also
+    tolerates an unknown nonblank phase by rendering a harmless locked view.
+
+    The UI never writes this object.  Button handling only persists a local
+    move-focus index; the runtime asks :meth:`BattleApp.requested_action` for
+    an intent and lets the battle service validate and apply it atomically.
+    """
+
+    battle_id: str
+    phase: BattlePhase | str
+    viewer_player_id: str
+    viewer_player_name: str
+    opponent_player_id: str
+    opponent_player_name: str
+    viewer_role: Literal["challenger", "opponent"] = "challenger"
+    viewer_ready: bool = False
+    opponent_ready: bool = False
+    active_player_id: str | None = None
+    viewer: BattleCombatantView | None = None
+    opponent: BattleCombatantView | None = None
+    turn_number: int = 0
+    rationale: str = ""
+    last_action: str = ""
+    notice: str = ""
+    winner_player_id: str | None = None
+    end_reason: str = ""
+    input_locked: bool = False
+
+    def __post_init__(self) -> None:
+        for label, value in (
+            ("battle_id", self.battle_id),
+            ("phase", self.phase),
+            ("viewer_player_id", self.viewer_player_id),
+            ("viewer_player_name", self.viewer_player_name),
+            ("opponent_player_id", self.opponent_player_id),
+            ("opponent_player_name", self.opponent_player_name),
+        ):
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"Battle {label} must be a non-empty string.")
+        if self.viewer_role not in {"challenger", "opponent"}:
+            raise ValueError("Battle viewer_role must be challenger or opponent.")
+        if self.turn_number < 0:
+            raise ValueError("Battle turn_number cannot be negative.")
+
+    @property
+    def normalized_phase(self) -> str:
+        """Map service aliases to the small set of scenes this UI understands."""
+
+        aliases = {
+            "turn": "active",
+            "in_progress": "active",
+            "generating": "resolving",
+            "director": "resolving",
+            "complete": "finished",
+            "timeout": "timed_out",
+        }
+        return aliases.get(str(self.phase).strip().lower(), str(self.phase).strip().lower())
+
+    @property
+    def viewer_turn(self) -> bool:
+        return self.normalized_phase == "active" and self.active_player_id == self.viewer_player_id
+
+    @property
+    def is_terminal(self) -> bool:
+        # ``disconnected`` is deliberately *not* terminal.  The store retains
+        # the shared battle during its reconnect grace period, so both badges
+        # must stay on a locked paused scene rather than being offered a
+        # misleading "return home" acknowledgement.
+        return self.normalized_phase in {"winner", "finished", "cancelled", "timed_out"}
+
+
+@dataclass(frozen=True, slots=True)
 class BadgeUiContext:
     """Read-only server data for a single badge render.
 
@@ -300,6 +449,10 @@ class BadgeUiContext:
     world_revision: int = 0
     width: int = 320
     height: int = 240
+    # Appended rather than inserted before legacy fields so older callers that
+    # constructed BadgeUiContext positionally keep their existing meaning.
+    battle: BattleView | None = None
+    battle_opponents: tuple[BattleOpponent, ...] = ()
 
     def __post_init__(self) -> None:
         if self.width <= 0 or self.height <= 0:
@@ -470,6 +623,18 @@ class BadgeApp(ABC):
     def render(self, state: JsonObject, context: BadgeUiContext) -> Screen:
         """Return drawing operations for the current state and fresh data."""
 
+    def owns_home_navigation(self, state: JsonObject, context: BadgeUiContext) -> bool:
+        """Whether this scene should receive HOME instead of the global router.
+
+        Most apps use HOME as an immediate return to the menu.  A live battle
+        must not silently disappear just because one participant presses HOME:
+        its reducer receives that button and the battle service can keep the
+        shared lifecycle authoritative.
+        """
+
+        del state, context
+        return False
+
 
 @dataclass(frozen=True, slots=True)
 class Theme:
@@ -511,7 +676,12 @@ class HomeApp(BadgeApp):
 
     app_id = "home"
 
-    def __init__(self, *, theme: Theme = DEFAULT_THEME, destinations: Sequence[str] = ("dex", "habitat")) -> None:
+    def __init__(
+        self,
+        *,
+        theme: Theme = DEFAULT_THEME,
+        destinations: Sequence[str] = ("dex", "habitat", "battle"),
+    ) -> None:
         if not destinations:
             raise ValueError("HomeApp needs at least one destination.")
         self._theme = theme
@@ -535,6 +705,7 @@ class HomeApp(BadgeApp):
         labels = {
             "dex": ("DEX", "Browse your captured creatures"),
             "habitat": ("HABITAT", "Watch their living world"),
+            "battle": ("BATTLE", "Challenge another trainer"),
         }
         operations: list[DrawOperation] = [
             Clear(theme.background),
@@ -542,7 +713,16 @@ class HomeApp(BadgeApp):
             Text(16, 16, "SHUTTERDEX", theme.text, size=26),
             Text(16, 45, "Choose an app", theme.muted, size=14),
         ]
-        card_y = 77
+        # Keep every destination selectable on a 320 x 240 badge.  The old
+        # two-card menu has room for a third app, but only with compact cards.
+        # This remains responsive for a custom HomeApp with a different count.
+        card_y = 68
+        gap = 7
+        card_height = max(
+            36,
+            (context.height - card_y - 8 - gap * (len(self._destinations) - 1))
+            // len(self._destinations),
+        )
         for index, destination in enumerate(self._destinations):
             selected = index == focus
             fill = theme.focus if selected else theme.surface
@@ -551,12 +731,12 @@ class HomeApp(BadgeApp):
             title, subtitle = labels.get(destination, (destination.upper(), ""))
             operations.extend(
                 (
-                    Rect(14, card_y, context.width - 28, 56, fill, radius=9),
-                    Text(29, card_y + 10, ("> " if selected else "  ") + title, title_color, size=19),
-                    Text(48, card_y + 33, subtitle, sub_color, size=12, max_width=context.width - 70),
+                    Rect(14, card_y, context.width - 28, card_height, fill, radius=9),
+                    Text(29, card_y + 7, ("> " if selected else "  ") + title, title_color, size=17),
+                    Text(48, card_y + 27, subtitle, sub_color, size=11, max_width=context.width - 70),
                 )
             )
-            card_y += 66
+            card_y += card_height + gap
         return Screen(tuple(operations), scene=self.app_id)
 
 
@@ -908,6 +1088,544 @@ class HabitatApp(BadgeApp):
         return tuple(fallback)
 
 
+BattleUiAction: TypeAlias = Literal[
+    "select_opponent",
+    "accept_challenge",
+    "ready",
+    "select_move",
+    "cancel_battle",
+    "leave_terminal",
+]
+
+
+class BattleApp(BadgeApp):
+    """Shared-battle presentation and local move focus.
+
+    ``BattleView`` is an immutable projection of one row shared by two badges.
+    It is intentionally the source of truth for the lifecycle, roster, turn,
+    and outcome.  This app persists only ``move_index`` in a badge session so
+    two players can independently browse their four moves without racing over
+    shared state.  A runtime can call :meth:`requested_action` after routing a
+    button to turn a valid press into one battle-service command.
+    """
+
+    app_id = "battle"
+
+    def __init__(self, *, theme: Theme = DEFAULT_THEME) -> None:
+        self._theme = theme
+
+    def initial_state(self, context: BadgeUiContext) -> JsonObject:
+        del context
+        return {
+            "move_index": 0,
+            "opponent_index": 0,
+            "challenge_target": "",
+            "terminal_battle_id": "",
+            "busy": False,
+        }
+
+    def owns_home_navigation(self, state: JsonObject, context: BadgeUiContext) -> bool:
+        """Do not let HOME silently abandon a nonterminal shared battle."""
+
+        del state
+        return bool(
+            context.battle is not None
+            and context.battle.normalized_phase != "idle"
+            and not context.battle.is_terminal
+        )
+
+    def reduce(self, state: JsonObject, event: ButtonEvent, context: BadgeUiContext) -> AppUpdate:
+        battle = context.battle
+        move_index = self.selected_move_index(state, context)
+        opponent_index = self.selected_opponent_index(state, context)
+        challenge_target = self.selected_challenge_target(state)
+        terminal_battle_id = self.terminal_battle_id(state)
+        busy = bool(state.get("busy"))
+        if busy:
+            # A runtime-owned action is still updating shared state.  Preserve
+            # the local focus but do not let any button mutate it or navigate.
+            return AppUpdate(
+                {
+                    "move_index": move_index,
+                    "opponent_index": opponent_index,
+                    "challenge_target": challenge_target,
+                    "terminal_battle_id": terminal_battle_id,
+                    "busy": True,
+                }
+            )
+        if battle is None and event.button in (Button.UP, Button.DOWN):
+            opponent_index = _focus_after_button(
+                opponent_index, len(context.battle_opponents), event.button
+            )
+        if battle is not None and self._can_choose_move(battle):
+            move_index = _focus_after_button(
+                move_index,
+                len(battle.viewer.moves) if battle.viewer else 0,
+                event.button,
+                columns=2,
+            )
+
+        # Terminal screens are acknowledgement-only.  Every nonterminal
+        # command is interpreted by the runtime through requested_action(),
+        # never through a mutation of UI/session state.
+        if battle is None and event.button is Button.B:
+            return AppUpdate(
+                {
+                    "move_index": move_index,
+                    "opponent_index": opponent_index,
+                    "challenge_target": "",
+                    "terminal_battle_id": "",
+                    "busy": False,
+                },
+                navigate_to="home",
+            )
+        if battle is not None and battle.is_terminal and event.button in (Button.A, Button.B):
+            return AppUpdate(
+                {
+                    "move_index": move_index,
+                    "opponent_index": opponent_index,
+                    "challenge_target": challenge_target,
+                    # A terminal result is intentionally one-shot. Once it
+                    # has been acknowledged, its audit row must not keep
+                    # replacing a later Battle lobby.
+                    "terminal_battle_id": "",
+                    "busy": False,
+                },
+                navigate_to="home",
+            )
+        return AppUpdate(
+            {
+                "move_index": move_index,
+                "opponent_index": opponent_index,
+                "challenge_target": challenge_target,
+                "terminal_battle_id": terminal_battle_id,
+                "busy": False,
+            }
+        )
+
+    def requested_action(
+        self,
+        state: JsonObject,
+        event: ButtonEvent,
+        context: BadgeUiContext,
+    ) -> BattleUiAction | None:
+        """Return an intent a runtime may submit to the battle service.
+
+        This is deliberately a pure query: it neither changes the local
+        selection nor trusts that the resulting action will be accepted.  The
+        service must still authorize participants, check the current revision,
+        enforce turn ownership, and transition shared state atomically.
+        """
+
+        if bool(state.get("busy")):
+            return None
+        battle = context.battle
+        if battle is None or battle.normalized_phase == "idle":
+            return (
+                "select_opponent"
+                if event.button is Button.A and self.selected_opponent_htn_id(state, context)
+                else None
+            )
+        if battle.is_terminal:
+            return "leave_terminal" if event.button in (Button.A, Button.B) else None
+        if event.button is Button.B and not battle.input_locked:
+            return "cancel_battle"
+
+        phase = battle.normalized_phase
+        if phase == "challenge":
+            if event.button is Button.A and battle.viewer_role == "opponent":
+                return "accept_challenge"
+            return None
+        if phase in {"ready", "waiting"}:
+            if event.button is Button.A and not battle.viewer_ready and not battle.input_locked:
+                return "ready"
+            return None
+        if phase == "active" and event.button is Button.A and self._can_choose_move(battle):
+            return "select_move"
+        return None
+
+    @staticmethod
+    def selected_move_index(state: JsonObject, context: BadgeUiContext) -> int:
+        """Return the valid local focus position for the current active moves."""
+
+        count = len(context.battle.viewer.moves) if context.battle and context.battle.viewer else 0
+        return _clamp(_int(state.get("move_index")), 0, max(0, count - 1))
+
+    @staticmethod
+    def selected_opponent_index(state: JsonObject, context: BadgeUiContext) -> int:
+        """Return the local focus position in the waiting-badge list."""
+
+        return _clamp(
+            _int(state.get("opponent_index")),
+            0,
+            max(0, len(context.battle_opponents) - 1),
+        )
+
+    @staticmethod
+    def selected_challenge_target(state: JsonObject) -> str:
+        """Read one prior, persisted invitation target without trusting it."""
+
+        target = state.get("challenge_target", "")
+        return target.strip() if isinstance(target, str) else ""
+
+    @staticmethod
+    def terminal_battle_id(state: JsonObject) -> str:
+        """Return the explicitly presented terminal battle, if any."""
+
+        battle_id = state.get("terminal_battle_id", "")
+        return battle_id.strip() if isinstance(battle_id, str) else ""
+
+    def selected_opponent_htn_id(
+        self, state: JsonObject, context: BadgeUiContext
+    ) -> str | None:
+        """Return the HTN ID currently focused in the reciprocal lobby."""
+
+        if not context.battle_opponents:
+            return None
+        return context.battle_opponents[
+            self.selected_opponent_index(state, context)
+        ].htn_id
+
+    def render(self, state: JsonObject, context: BadgeUiContext) -> Screen:
+        battle = context.battle
+        if battle is not None and bool(state.get("busy")):
+            # The SQLite row may still say ``active`` while a Writer request is
+            # being made.  Present the same explicit, input-locked Director
+            # phase immediately rather than waiting for a network response.
+            battle = replace(
+                battle,
+                phase="resolving",
+                input_locked=True,
+                notice="The Director is preparing this turn.",
+            )
+        if battle is None or battle.normalized_phase == "idle":
+            return self._render_discovery(state, context)
+        if battle.is_terminal:
+            return self._render_terminal(battle, context)
+        if battle.normalized_phase in {"challenge", "ready", "waiting"}:
+            return self._render_setup(battle, context)
+        if battle.normalized_phase in {"active", "resolving"}:
+            return self._render_arena(battle, self.selected_move_index(state, context), context)
+        return self._render_paused(battle, context)
+
+    def _render_discovery(self, state: JsonObject, context: BadgeUiContext) -> Screen:
+        """Draw the reciprocal lobby using only visible HTN badge IDs."""
+
+        theme = self._theme
+        opponents = context.battle_opponents
+        focus = self.selected_opponent_index(state, context)
+        target = self.selected_challenge_target(state)
+        busy = bool(state.get("busy"))
+        operations: list[DrawOperation] = [
+            Clear(theme.background),
+            Leds((theme.accent, theme.focus, theme.accent), brightness=34),
+            Text(12, 13, "BATTLE", theme.text, size=24),
+            Text(12, 42, "WAITING FOR CHALLENGE", theme.muted, size=11),
+        ]
+        if not opponents:
+            operations.extend(
+                (
+                    Rect(12, 66, context.width - 24, 103, theme.surface, radius=10),
+                    Text(25, 84, "NO BADGES WAITING", theme.focus, size=16, max_width=context.width - 50),
+                    Text(
+                        25,
+                        113,
+                        "Open Battle on another paired badge. Its HTN ID will appear here.",
+                        theme.text,
+                        size=13,
+                        max_width=context.width - 50,
+                        max_lines=3,
+                        scroll=True,
+                    ),
+                    Text(15, context.height - 26, "B HOME", theme.muted, size=11, max_width=context.width - 30),
+                )
+            )
+            return Screen(tuple(operations), scene=self.app_id)
+
+        operations.append(
+            Text(
+                18,
+                62,
+                "Choose the badge you can see. Both badges must choose each other.",
+                theme.muted,
+                size=10,
+                max_width=context.width - 36,
+                max_lines=2,
+                scroll=True,
+            )
+        )
+        for index, opponent in enumerate(opponents[:4]):
+            selected = index == focus
+            y = 89 + index * 27
+            fill = theme.focus if selected else theme.surface
+            colour = theme.focus_text if selected else theme.text
+            marker = "> " if selected else "  "
+            operations.extend(
+                (
+                    Rect(16, y, context.width - 32, 23, fill, radius=6),
+                    Text(28, y + 5, marker + opponent.htn_id.upper(), colour, size=12, max_width=context.width - 56),
+                )
+            )
+        if target:
+            status = (
+                f"LINKING TO {target.upper()}..." if busy else f"YOUR PICK: {target.upper()}"
+            )
+            operations.append(
+                Text(16, 202, status, theme.accent, size=10, max_width=context.width - 32, scroll=True)
+            )
+        footer = "LINKING..." if busy else "UP/DOWN CHOOSE   A SELECT   B HOME"
+        operations.append(
+            Text(15, context.height - 26, footer, theme.muted, size=10, max_width=context.width - 30, scroll=True)
+        )
+        return Screen(tuple(operations), scene=self.app_id)
+
+    def _render_setup(self, battle: BattleView, context: BadgeUiContext) -> Screen:
+        theme = self._theme
+        phase = battle.normalized_phase
+        viewer_ready = "READY" if battle.viewer_ready else "NOT READY"
+        opponent_ready = "READY" if battle.opponent_ready else "NOT READY"
+        if battle.input_locked:
+            heading = "SYNCING BATTLE"
+            body = "The shared battle state is updating. Controls unlock automatically."
+            footer = "CONTROLS LOCKED"
+        elif phase == "challenge":
+            if battle.viewer_role == "opponent":
+                heading = "CHALLENGE DETECTED"
+                body = f"{battle.opponent_player_name} wants to battle you."
+                footer = "A ACCEPT   B DECLINE"
+            else:
+                heading = "CHALLENGE SENT"
+                body = f"Waiting for {battle.opponent_player_name} to accept."
+                footer = "WAITING - B CANCEL"
+        elif battle.viewer_ready and not battle.opponent_ready:
+            heading = "YOU ARE READY"
+            body = f"Waiting for {battle.opponent_player_name} to ready up."
+            footer = "WAITING - B CANCEL"
+        elif not battle.viewer_ready:
+            heading = "READY CHECK"
+            body = "Confirm your roster when you are ready to begin."
+            footer = "A READY   B CANCEL"
+        else:
+            heading = "READY CHECK"
+            body = "Both trainers are ready. Starting the battle..."
+            footer = "STARTING - CONTROLS LOCKED"
+
+        if battle.notice:
+            body = battle.notice
+        operations: list[DrawOperation] = [
+            Clear(theme.background),
+            Leds((theme.focus, theme.accent, theme.focus), brightness=37),
+            Text(12, 13, "BATTLE LINK", theme.text, size=24),
+            Text(12, 43, heading, theme.focus, size=15, max_width=context.width - 24, scroll=True),
+            Rect(12, 68, context.width - 24, 50, theme.surface, radius=9),
+            Text(26, 80, f"{battle.viewer_player_name}: {viewer_ready}", theme.text, size=13, max_width=context.width - 52, scroll=True),
+            Text(26, 102, f"{battle.opponent_player_name}: {opponent_ready}", theme.text, size=13, max_width=context.width - 52, scroll=True),
+            Rect(12, 130, context.width - 24, 60, theme.surface_alt, radius=9),
+            Text(25, 142, body, theme.text, size=13, max_width=context.width - 50, max_lines=3, scroll=True),
+            Text(15, context.height - 26, footer, theme.muted, size=11, max_width=context.width - 30, scroll=True),
+        ]
+        return Screen(tuple(operations), scene=self.app_id)
+
+    def _render_arena(self, battle: BattleView, move_index: int, context: BadgeUiContext) -> Screen:
+        theme = self._theme
+        resolving = battle.normalized_phase == "resolving"
+        viewer_turn = self._can_choose_move(battle)
+        if resolving:
+            status = "DIRECTOR RESOLVING - CONTROLS LOCKED"
+            status_color = theme.focus
+        elif viewer_turn:
+            status = "YOUR TURN - CHOOSE A MOVE"
+            status_color = theme.accent
+        else:
+            status = f"{battle.opponent_player_name.upper()} TURN - CONTROLS LOCKED"
+            status_color = theme.muted
+        operations: list[DrawOperation] = [
+            Clear(theme.background),
+            Leds(
+                (theme.focus, theme.focus, theme.focus) if resolving else (theme.accent, theme.focus, theme.accent),
+                brightness=38,
+            ),
+            Text(10, 8, "BATTLE", theme.text, size=21),
+            Text(context.width - 96, 13, f"TURN {max(1, battle.turn_number)}", theme.muted, size=11, max_width=86, align="right"),
+            Text(10, 32, status, status_color, size=10, max_width=context.width - 20, scroll=True),
+        ]
+        self._append_combatant_card(
+            operations,
+            x=8,
+            y=49,
+            width=148,
+            combatant=battle.viewer,
+            label="YOU",
+            theme=theme,
+        )
+        self._append_combatant_card(
+            operations,
+            x=164,
+            y=49,
+            width=context.width - 172,
+            combatant=battle.opponent,
+            label=battle.opponent_player_name.upper(),
+            theme=theme,
+        )
+
+        narrative = battle.rationale or battle.last_action or battle.notice
+        narrative_heading = "DIRECTOR RATIONALE" if battle.rationale else "BATTLE UPDATE"
+        operations.extend(
+            (
+                Rect(8, 124, context.width - 16, 39, theme.surface, radius=8),
+                Text(17, 129, narrative_heading, theme.focus, size=9, max_width=context.width - 34),
+                Text(
+                    17,
+                    143,
+                    narrative or "Choose a move to see how the clash unfolds.",
+                    theme.text,
+                    size=11,
+                    max_width=context.width - 34,
+                    scroll=True,
+                ),
+                Text(10, 168, "MOVES", theme.muted, size=10),
+            )
+        )
+        self._append_moves(operations, battle, move_index, enabled=viewer_turn, context=context)
+        return Screen(tuple(operations), scene=self.app_id)
+
+    def _render_paused(self, battle: BattleView, context: BadgeUiContext) -> Screen:
+        theme = self._theme
+        reconnecting = battle.normalized_phase == "disconnected"
+        body = (
+            battle.notice or "Waiting for the other player to reconnect."
+            if reconnecting
+            else battle.notice or "Waiting for the battle service to update this match."
+        )
+        operations: list[DrawOperation] = [
+            Clear(theme.background),
+            Leds((theme.muted, theme.focus, theme.muted), brightness=28),
+            Text(12, 13, "BATTLE", theme.text, size=24),
+            Text(
+                12,
+                43,
+                "RECONNECTING PLAYER" if reconnecting else "SHARED STATE PAUSED",
+                theme.focus,
+                size=15,
+            ),
+            Rect(12, 68, context.width - 24, 91, theme.surface, radius=9),
+            Text(25, 83, body, theme.text, size=13, max_width=context.width - 50, max_lines=4, scroll=True),
+            Text(15, context.height - 26, "CONTROLS LOCKED", theme.muted, size=11, max_width=context.width - 30),
+        ]
+        return Screen(tuple(operations), scene=self.app_id)
+
+    def _render_terminal(self, battle: BattleView, context: BadgeUiContext) -> Screen:
+        theme = self._theme
+        phase = battle.normalized_phase
+        if phase in {"winner", "finished"}:
+            if battle.winner_player_id == battle.viewer_player_id:
+                heading, colour = "YOU WIN!", theme.accent
+            elif battle.winner_player_id:
+                heading, colour = f"{battle.opponent_player_name.upper()} WINS", theme.danger
+            else:
+                heading, colour = "BATTLE COMPLETE", theme.focus
+        elif phase == "cancelled":
+            heading, colour = "BATTLE CANCELLED", theme.muted
+        elif phase == "disconnected":
+            heading, colour = "OPPONENT DISCONNECTED", theme.danger
+        else:
+            heading, colour = "BATTLE TIMED OUT", theme.danger
+        body = battle.end_reason or battle.notice or battle.rationale or "The shared battle has ended."
+        operations: list[DrawOperation] = [
+            Clear(theme.background),
+            Leds((colour, colour, colour), brightness=34),
+            Text(12, 13, "BATTLE", theme.text, size=24),
+            Rect(12, 63, context.width - 24, 105, theme.surface, radius=10),
+            Text(25, 81, heading, colour, size=18, max_width=context.width - 50, scroll=True),
+            Text(25, 116, body, theme.text, size=13, max_width=context.width - 50, max_lines=3, scroll=True),
+            Text(15, context.height - 26, "A OR B RETURN HOME", theme.muted, size=11),
+        ]
+        return Screen(tuple(operations), scene=self.app_id)
+
+    @staticmethod
+    def _can_choose_move(battle: BattleView) -> bool:
+        return bool(
+            battle.viewer_turn
+            and not battle.input_locked
+            and battle.viewer is not None
+            and not battle.viewer.fainted
+            and battle.viewer.moves
+        )
+
+    @staticmethod
+    def _append_combatant_card(
+        operations: list[DrawOperation],
+        *,
+        x: int,
+        y: int,
+        width: int,
+        combatant: BattleCombatantView | None,
+        label: str,
+        theme: Theme,
+    ) -> None:
+        operations.append(Rect(x, y, width, 67, theme.surface_alt, radius=8))
+        operations.append(Text(x + 7, y + 5, label, theme.muted, size=9, max_width=width - 14, scroll=True))
+        if combatant is None:
+            operations.append(Text(x + 8, y + 31, "Awaiting roster", theme.muted, size=11, max_width=width - 16))
+            return
+        if combatant.sprite_url:
+            operations.append(Image(x + 7, y + 23, 35, 35, combatant.sprite_url))
+        else:
+            operations.extend(
+                (
+                    Rect(x + 7, y + 23, 35, 35, _element_colour(combatant.element), radius=10),
+                    Text(x + 18, y + 31, combatant.name[:1].upper(), theme.focus_text, size=17),
+                )
+            )
+        name_colour = theme.danger if combatant.fainted else theme.text
+        operations.extend(
+            (
+                Text(x + 47, y + 22, combatant.name, name_colour, size=11, max_width=width - 54, scroll=True),
+                Text(x + 47, y + 37, combatant.element.upper(), _element_colour(combatant.element), size=9, max_width=width - 54, scroll=True),
+                Text(x + 47, y + 51, f"HP {max(0, combatant.hp)}/{combatant.max_hp}", theme.muted, size=8, max_width=width - 54),
+                Rect(x + 47, y + 61, width - 55, 3, "#08111F", radius=2),
+                Rect(x + 47, y + 61, round((width - 55) * combatant.hp_ratio), 3, _element_colour(combatant.element), radius=2),
+                Text(x + 7, y + 59, f"{combatant.roster_index + 1}/{combatant.roster_size}", theme.muted, size=8, max_width=35),
+            )
+        )
+
+    def _append_moves(
+        self,
+        operations: list[DrawOperation],
+        battle: BattleView,
+        move_index: int,
+        *,
+        enabled: bool,
+        context: BadgeUiContext,
+    ) -> None:
+        theme = self._theme
+        moves = battle.viewer.moves if battle.viewer else ()
+        if not moves:
+            operations.append(Text(17, 192, "No moves available", theme.muted, size=12))
+            return
+        cell_width = (context.width - 24) // 2
+        for index, move in enumerate(moves[:4]):
+            column, row = index % 2, index // 2
+            x, y = 8 + column * (cell_width + 8), 178 + row * 28
+            selected = enabled and index == move_index
+            fill = theme.focus if selected else theme.surface_alt
+            text_colour = theme.focus_text if selected else (theme.text if enabled else theme.muted)
+            operations.extend(
+                (
+                    Rect(x, y, cell_width, 24, fill, radius=6),
+                    Text(
+                        x + 7,
+                        y + 6,
+                        ("> " if selected else "  ") + move.replace("_", " ").upper(),
+                        text_colour,
+                        size=10,
+                        max_width=cell_width - 14,
+                        scroll=True,
+                    ),
+                )
+            )
+
+
 # ---------------------------------------------------------------------------
 # Stateless routing/controller
 # ---------------------------------------------------------------------------
@@ -961,9 +1679,18 @@ class BadgeUi:
 
     @classmethod
     def standard(cls, *, theme: Theme = DEFAULT_THEME) -> "BadgeUi":
-        """Build Shutterdex's initial Home, Dex, and Habitat application set."""
+        """Build Shutterdex's initial Home, Dex, Habitat, and Battle app set."""
 
-        return cls(AppRegistry((HomeApp(theme=theme), DexApp(theme=theme), HabitatApp(theme=theme))))
+        return cls(
+            AppRegistry(
+                (
+                    HomeApp(theme=theme),
+                    DexApp(theme=theme),
+                    HabitatApp(theme=theme),
+                    BattleApp(theme=theme),
+                )
+            )
+        )
 
     @property
     def app_ids(self) -> tuple[str, ...]:
@@ -996,7 +1723,18 @@ class BadgeUi:
 
         # Home is a framework-level navigation action.  It does not depend on
         # firmware callbacks, and it preserves the old app's state for return.
-        if button_event.button is Button.HOME and active_app_id != self._home_app_id:
+        app = self._registry.get(active_app_id)
+        current = app_states.get(active_app_id)
+        if current is None:
+            current = _json_object(app.initial_state(context), label=f"initial {active_app_id!r} state")
+
+        if (
+            button_event.button is Button.HOME
+            and active_app_id != self._home_app_id
+            and not app.owns_home_navigation(
+                _json_object(current, label=f"current {active_app_id!r} state"), context
+            )
+        ):
             home_state = app_states.get(self._home_app_id)
             if home_state is None:
                 home_state = self._registry.get(self._home_app_id).initial_state(context)
@@ -1007,10 +1745,6 @@ class BadgeUi:
                 revision=session.revision + 1,
             )
 
-        app = self._registry.get(active_app_id)
-        current = app_states.get(active_app_id)
-        if current is None:
-            current = _json_object(app.initial_state(context), label=f"initial {active_app_id!r} state")
         update = app.reduce(_json_object(current, label=f"current {active_app_id!r} state"), button_event, context)
         app_states[active_app_id] = _json_object(update.state, label=f"next {active_app_id!r} state")
 
@@ -1054,6 +1788,12 @@ __all__ = [
     "BadgeSessionState",
     "BadgeUi",
     "BadgeUiContext",
+    "BattleApp",
+    "BattleCombatantView",
+    "BattleOpponent",
+    "BattlePhase",
+    "BattleUiAction",
+    "BattleView",
     "Button",
     "ButtonEvent",
     "Clear",

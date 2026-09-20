@@ -305,10 +305,23 @@ class HTNBadgeGateway:
 
         try:
             await self._transport.connect(credentials)
-        except Exception:
+        except GatewayError:
             async with self._sessions_lock:
                 self._sessions.pop(credentials.badge_id, None)
             raise
+        except Exception as exc:
+            # Third-party WebSocket clients expose their own connection
+            # exceptions (for example ``websockets.InvalidStatus`` for an
+            # HTTP 502).  Keep that implementation detail inside the gateway:
+            # callers need a recoverable GatewayError so one unavailable badge
+            # cannot abort the whole FastAPI lifespan before configured keys
+            # from .env have a chance to replace stale stored credentials.
+            async with self._sessions_lock:
+                self._sessions.pop(credentials.badge_id, None)
+            raise TransportError(
+                f"Could not open the badge service connection for {credentials.badge_id!r} "
+                f"({type(exc).__name__})"
+            ) from exc
 
         # Creating tasks only after a successful connect avoids a background
         # reconnect loop for a badge that was never actually registered.

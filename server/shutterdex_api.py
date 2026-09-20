@@ -11,23 +11,34 @@ them before deploying to an untrusted public network.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, File, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from badge_store import (
     BadgeStore,
+    BattleRecord,
     ConflictError,
     NotFoundError,
     OwnershipError,
     PokemonWorldState,
     SimulationDialogueLine,
     SimulationEventRecord,
+    battle_candidate_outcome_to_dict,
+    battle_record_to_dict,
+    battle_turn_to_dict,
     badge_to_dict,
     player_to_dict,
     pokemon_from_dict,
     pokemon_to_dict,
     simulation_event_to_dict,
     world_state_to_dict,
+)
+from battle_service import (
+    BattleDirectorUnavailableError,
+    BattleResolutionError,
+    BattleService,
+    BattleServiceError,
+    BattleWriterUnavailableError,
 )
 from credential_vault import CredentialError
 from htn_gateway import GatewayError
@@ -116,6 +127,54 @@ class SimulationEventRequest(BaseModel):
     dialogue: list[DialogueRequest] = Field(default_factory=list, max_length=4)
 
 
+class BattleChallengeRequest(BaseModel):
+    """Start a server-authoritative match between two paired badge owners."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    challenger_htn_id: str = Field(min_length=1, max_length=64)
+    opponent_htn_id: str = Field(min_length=1, max_length=64)
+
+
+class BattleReadyRequest(BaseModel):
+    """One participant's ready-check response for a pending challenge."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    htn_id: str = Field(min_length=1, max_length=64)
+    ready: bool = True
+    expected_revision: int | None = Field(default=None, ge=0)
+
+
+class BattleMoveRequest(BaseModel):
+    """A move-index press from the active participant's badge."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    htn_id: str = Field(min_length=1, max_length=64)
+    move_index: int = Field(ge=0, le=3)
+    expected_revision: int | None = Field(default=None, ge=0)
+
+
+class BattleCancelRequest(BaseModel):
+    """Cancel an open challenge or battle from either participant badge."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    htn_id: str = Field(min_length=1, max_length=64)
+    reason: str = Field(default="cancelled", min_length=1, max_length=160)
+    expected_revision: int | None = Field(default=None, ge=0)
+
+
+class BattleConnectionRequest(BaseModel):
+    """Report one participant's connection state without trusting a player ID."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    htn_id: str = Field(min_length=1, max_length=64)
+    expected_revision: int | None = Field(default=None, ge=0)
+
+
 def runtime(request: Request) -> ShutterdexRuntime:
     return request.app.state.shutterdex_runtime
 
@@ -130,6 +189,17 @@ def sprites(request: Request) -> SpriteStore:
 
 def player_simulation(request: Request) -> PlayerSimulationService:
     return request.app.state.player_simulation
+
+
+def battle_service(request: Request) -> BattleService:
+    """Return the one process-wide battle coordinator.
+
+    It is deliberately separate from the runtime: dashboard requests and
+    hardware button events use the same durable service methods, while the
+    runtime is responsible only for presenting the resulting shared state.
+    """
+
+    return request.app.state.battle_service
 
 
 def _dispatch_payload(dispatch: RenderDispatch) -> dict[str, object]:
@@ -152,6 +222,15 @@ def _http_error(exc: Exception) -> HTTPException:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(exc),
         )
+    if isinstance(
+        exc, (BattleWriterUnavailableError, BattleDirectorUnavailableError)
+    ):
+        return HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        )
+    if isinstance(exc, (BattleResolutionError, BattleServiceError)):
+        return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
     if isinstance(exc, (EmptyHabitatError, WorldChangedError, PlayerSimulationError)):
         return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
     if isinstance(exc, CredentialError):
@@ -161,6 +240,47 @@ def _http_error(exc: Exception) -> HTTPException:
     if isinstance(exc, (SpriteError, ValueError)):
         return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
     return HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Shutterdex failed to process the request.")
+
+
+def _paired_badge_player_id(request: Request, htn_id: str) -> str:
+    """Resolve a paired badge to its player without accepting a client player ID."""
+
+    badge = store(request).require_badge_by_htn_id(htn_id)
+    if badge.player_id is None:
+        raise OwnershipError("This badge must be paired to a player before it can battle.")
+    return badge.player_id
+
+
+def _battle_participant_player_id(request: Request, battle_id: str, htn_id: str) -> str:
+    """Authorize a battle action through the participant's paired badge."""
+
+    badge = store(request).require_badge_by_htn_id(htn_id)
+    player_id = _paired_badge_player_id(request, htn_id)
+    battle = store(request).require_battle(battle_id)
+    if player_id not in {battle.challenger_player_id, battle.opponent_player_id}:
+        raise OwnershipError("This badge's player is not a participant in this battle.")
+    expected_badge_id = (
+        battle.challenger_badge_id
+        if player_id == battle.challenger_player_id
+        else battle.opponent_badge_id
+    )
+    if expected_badge_id is not None and badge.badge_id != expected_badge_id:
+        raise OwnershipError("Only the badge selected for this battle can control it.")
+    return player_id
+
+
+async def _present_battle_payload(
+    request: Request, battle: BattleRecord
+) -> dict[str, object]:
+    """Render the same durable result on both player badges and serialize it."""
+
+    # All API-visible data passes through the safe serializer so a badge's
+    # encrypted app key can never appear in a battle response.
+    renders = await runtime(request).present_battle(battle)
+    return {
+        "battle": battle_record_to_dict(battle),
+        "refreshed_badges": [_dispatch_payload(item) for item in renders],
+    }
 
 
 @router.post("/players", status_code=status.HTTP_201_CREATED)
@@ -257,6 +377,196 @@ async def badge_session(htn_id: str, request: Request) -> dict[str, object]:
                 "updated_at": session.updated_at.isoformat(),
             },
         }
+    except Exception as exc:
+        raise _http_error(exc) from exc
+
+
+@router.post("/battles/challenges", status_code=status.HTTP_201_CREATED)
+async def create_battle_challenge(
+    body: BattleChallengeRequest, request: Request
+) -> dict[str, object]:
+    """Snapshot both players' newest battle-ready Pokemon into a challenge."""
+
+    try:
+        # Purge old ready/turn/reconnect deadlines before checking the
+        # one-open-battle rule.  A terminal record can then be replaced by a
+        # fresh challenge without a manual database repair.
+        for expired in await battle_service(request).expire_due():
+            await runtime(request).present_battle(expired)
+
+        challenger_badge = store(request).require_badge_by_htn_id(
+            body.challenger_htn_id
+        )
+        opponent_badge = store(request).require_badge_by_htn_id(body.opponent_htn_id)
+        challenger_player_id = _paired_badge_player_id(
+            request, body.challenger_htn_id
+        )
+        opponent_player_id = _paired_badge_player_id(request, body.opponent_htn_id)
+        battle = await battle_service(request).challenge(
+            challenger_player_id,
+            opponent_player_id,
+            challenger_badge_id=challenger_badge.badge_id,
+            opponent_badge_id=opponent_badge.badge_id,
+        )
+        return await _present_battle_payload(request, battle)
+    except Exception as exc:
+        raise _http_error(exc) from exc
+
+
+@router.post("/battles/expire")
+async def expire_battles(request: Request) -> dict[str, object]:
+    """Run the durable deadline sweep and update each affected badge scene."""
+
+    try:
+        expired = await battle_service(request).expire_due()
+        renders: list[RenderDispatch] = []
+        for battle in expired:
+            renders.extend(await runtime(request).present_battle(battle))
+        return {
+            "expired": [battle_record_to_dict(item) for item in expired],
+            "refreshed_badges": [_dispatch_payload(item) for item in renders],
+        }
+    except Exception as exc:
+        raise _http_error(exc) from exc
+
+
+@router.get("/badges/{htn_id}/battle")
+async def open_badge_battle(htn_id: str, request: Request) -> dict[str, object]:
+    """Return the one nonterminal battle attached to a paired badge, if any."""
+
+    try:
+        badge = store(request).require_badge_by_htn_id(htn_id)
+        player_id = _paired_badge_player_id(request, htn_id)
+        battle = store(request).get_open_battle_for_player(player_id)
+        if battle is not None:
+            expected_badge_id = (
+                battle.challenger_badge_id
+                if player_id == battle.challenger_player_id
+                else battle.opponent_badge_id
+            )
+            if expected_badge_id is not None and expected_badge_id != badge.badge_id:
+                battle = None
+        return {"battle": battle_record_to_dict(battle) if battle is not None else None}
+    except Exception as exc:
+        raise _http_error(exc) from exc
+
+
+@router.get("/battles/{battle_id}")
+async def get_battle(
+    battle_id: str,
+    request: Request,
+    htn_id: str = Query(min_length=1, max_length=64),
+) -> dict[str, object]:
+    """Read one battle and its persisted Writer/Jev audit turns as a participant."""
+
+    try:
+        _battle_participant_player_id(request, battle_id, htn_id)
+        battle = store(request).require_battle(battle_id)
+        return {
+            "battle": battle_record_to_dict(battle),
+            "turns": [
+                battle_turn_to_dict(item)
+                for item in store(request).list_battle_turns(battle_id)
+            ],
+        }
+    except Exception as exc:
+        raise _http_error(exc) from exc
+
+
+@router.post("/battles/{battle_id}/ready")
+async def ready_battle(
+    battle_id: str, body: BattleReadyRequest, request: Request
+) -> dict[str, object]:
+    """Record one badge's ready response; activation requires both players."""
+
+    try:
+        player_id = _battle_participant_player_id(request, battle_id, body.htn_id)
+        battle = await battle_service(request).ready(
+            battle_id,
+            player_id,
+            ready=body.ready,
+            expected_revision=body.expected_revision,
+        )
+        return await _present_battle_payload(request, battle)
+    except Exception as exc:
+        raise _http_error(exc) from exc
+
+
+@router.post("/battles/{battle_id}/moves")
+async def select_battle_move(
+    battle_id: str, body: BattleMoveRequest, request: Request
+) -> dict[str, object]:
+    """Resolve one legal move through Writer -> Jev -> deterministic commit."""
+
+    try:
+        player_id = _battle_participant_player_id(request, battle_id, body.htn_id)
+        result = await battle_service(request).resolve_move(
+            battle_id,
+            player_id,
+            body.move_index,
+            expected_revision=body.expected_revision,
+        )
+        payload = await _present_battle_payload(request, result.battle)
+        payload["turn"] = battle_turn_to_dict(result.turn)
+        payload["selected_candidate"] = battle_candidate_outcome_to_dict(
+            result.selected_candidate
+        )
+        return payload
+    except Exception as exc:
+        raise _http_error(exc) from exc
+
+
+@router.post("/battles/{battle_id}/cancel")
+async def cancel_battle(
+    battle_id: str, body: BattleCancelRequest, request: Request
+) -> dict[str, object]:
+    """Cancel an open battle from either paired participant badge."""
+
+    try:
+        player_id = _battle_participant_player_id(request, battle_id, body.htn_id)
+        battle = await battle_service(request).cancel(
+            battle_id,
+            player_id,
+            reason=body.reason,
+            expected_revision=body.expected_revision,
+        )
+        return await _present_battle_payload(request, battle)
+    except Exception as exc:
+        raise _http_error(exc) from exc
+
+
+@router.post("/battles/{battle_id}/disconnect")
+async def disconnect_battle_player(
+    battle_id: str, body: BattleConnectionRequest, request: Request
+) -> dict[str, object]:
+    """Temporarily lock a match while one of its badges reconnects."""
+
+    try:
+        player_id = _battle_participant_player_id(request, battle_id, body.htn_id)
+        battle = await battle_service(request).disconnect(
+            battle_id,
+            player_id,
+            expected_revision=body.expected_revision,
+        )
+        return await _present_battle_payload(request, battle)
+    except Exception as exc:
+        raise _http_error(exc) from exc
+
+
+@router.post("/battles/{battle_id}/reconnect")
+async def reconnect_battle_player(
+    battle_id: str, body: BattleConnectionRequest, request: Request
+) -> dict[str, object]:
+    """Restore the pre-disconnect turn/ready phase for the returning badge."""
+
+    try:
+        player_id = _battle_participant_player_id(request, battle_id, body.htn_id)
+        battle = await battle_service(request).reconnect(
+            battle_id,
+            player_id,
+            expected_revision=body.expected_revision,
+        )
+        return await _present_battle_payload(request, battle)
     except Exception as exc:
         raise _http_error(exc) from exc
 

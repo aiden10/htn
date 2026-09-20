@@ -14,13 +14,15 @@ each other's rendered state.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import logging
 from collections.abc import Awaitable, Callable, Iterable
 
 from badge_renderer import RenderError, ScreenRenderer
 from badge_store import (
     Badge,
+    BattleRecord,
+    BattleRosterSnapshot,
     BadgeSession,
     BadgeStore,
     ConflictError,
@@ -31,6 +33,10 @@ from badge_ui import (
     BadgeSessionState,
     BadgeUi,
     BadgeUiContext,
+    BattleApp,
+    BattleCombatantView,
+    BattleOpponent,
+    BattleView,
     Button,
     ButtonEvent,
     Clear,
@@ -95,6 +101,11 @@ class ShutterdexRuntime:
     # Writer and Jev calls are serial, but a badge should never remain on a
     # permanent "working" screen if a provider connection stalls.
     HABITAT_ADVANCE_TIMEOUT_SECONDS = 45.0
+    # Battle Writer + Jev work happens outside the badge lock.  This deadline
+    # is an extra guard around the service's own provider handling, so a
+    # transient SDK/network stall cannot leave one badge locally input-locked.
+    BATTLE_ACTION_TIMEOUT_SECONDS = 60.0
+    BATTLE_EXPIRY_INTERVAL_SECONDS = 2.0
 
     def __init__(
         self,
@@ -106,6 +117,11 @@ class ShutterdexRuntime:
         renderer: ScreenRenderer,
         sprites: SpriteStore,
         on_habitat_advance: Callable[[str], Awaitable[object]] | None = None,
+        on_battle_action: Callable[[str, str | None, str, int | None], Awaitable[object]] | None = None,
+        on_battle_discovery_select: Callable[[str, str, str], Awaitable[BattleRecord | None]] | None = None,
+        on_battle_disconnect: Callable[[str], Awaitable[object]] | None = None,
+        on_battle_reconnect: Callable[[str], Awaitable[object]] | None = None,
+        on_battle_expire: Callable[[], Awaitable[object]] | None = None,
     ) -> None:
         self.store = store
         self.gateway = gateway
@@ -114,12 +130,27 @@ class ShutterdexRuntime:
         self.renderer = renderer
         self.sprites = sprites
         self._on_habitat_advance = on_habitat_advance
+        self._on_battle_action = on_battle_action
+        self._on_battle_discovery_select = on_battle_discovery_select
+        self._on_battle_disconnect = on_battle_disconnect
+        self._on_battle_reconnect = on_battle_reconnect
+        self._on_battle_expire = on_battle_expire
         self._locks: dict[str, asyncio.Lock] = {}
         self._unsubscribe: Callable[[], None] | None = None
         self._delivery_tasks: set[asyncio.Task[None]] = set()
+        self._latest_delivery_tasks: dict[str, asyncio.Task[None]] = {}
         self._habitat_scroll_task: asyncio.Task[None] | None = None
         self._habitat_panel_delivery_tasks: dict[str, asyncio.Task[None]] = {}
         self._habitat_advance_tasks: dict[str, asyncio.Task[None]] = {}
+        self._battle_action_tasks: dict[str, asyncio.Task[None]] = {}
+        # A move starts with Writer work before its candidates can be durably
+        # saved. Keep this short-lived process-local marker so both selected
+        # participant badges lock immediately rather than exposing a tiny
+        # second-input window before SQLite switches to ``resolving``.
+        self._battle_preparing_ids: set[str] = set()
+        self._battle_refresh_tasks: dict[str, asyncio.Task[None]] = {}
+        self._battle_lobby_refresh_task: asyncio.Task[None] | None = None
+        self._battle_expiry_task: asyncio.Task[None] | None = None
         self._capture_loading_badges: set[str] = set()
         self._capture_loading_tasks: dict[str, asyncio.Task[None]] = {}
         self._habitat_scroll_step = 0
@@ -140,6 +171,10 @@ class ShutterdexRuntime:
         self._habitat_scroll_task = asyncio.create_task(
             self._scroll_habitat_labels(), name="shutterdex-habitat-scroll"
         )
+        if self._on_battle_expire is not None:
+            self._battle_expiry_task = asyncio.create_task(
+                self._expire_battles_in_background(), name="shutterdex-battle-expiry"
+            )
         for badge in self.store.list_badges():
             try:
                 await self.ensure_registered(badge.htn_id)
@@ -157,11 +192,30 @@ class ShutterdexRuntime:
             self._habitat_scroll_task.cancel()
             await asyncio.gather(self._habitat_scroll_task, return_exceptions=True)
             self._habitat_scroll_task = None
+        if self._battle_expiry_task is not None:
+            self._battle_expiry_task.cancel()
+            await asyncio.gather(self._battle_expiry_task, return_exceptions=True)
+            self._battle_expiry_task = None
         for task in tuple(self._habitat_advance_tasks.values()):
             task.cancel()
         if self._habitat_advance_tasks:
             await asyncio.gather(*self._habitat_advance_tasks.values(), return_exceptions=True)
         self._habitat_advance_tasks.clear()
+        for task in tuple(self._battle_action_tasks.values()):
+            task.cancel()
+        if self._battle_action_tasks:
+            await asyncio.gather(*self._battle_action_tasks.values(), return_exceptions=True)
+        self._battle_action_tasks.clear()
+        self._battle_preparing_ids.clear()
+        for task in tuple(self._battle_refresh_tasks.values()):
+            task.cancel()
+        if self._battle_refresh_tasks:
+            await asyncio.gather(*self._battle_refresh_tasks.values(), return_exceptions=True)
+        self._battle_refresh_tasks.clear()
+        if self._battle_lobby_refresh_task is not None:
+            self._battle_lobby_refresh_task.cancel()
+            await asyncio.gather(self._battle_lobby_refresh_task, return_exceptions=True)
+            self._battle_lobby_refresh_task = None
         for task in tuple(self._capture_loading_tasks.values()):
             task.cancel()
         if self._capture_loading_tasks:
@@ -173,6 +227,7 @@ class ShutterdexRuntime:
         if self._delivery_tasks:
             await asyncio.gather(*self._delivery_tasks, return_exceptions=True)
         self._delivery_tasks.clear()
+        self._latest_delivery_tasks.clear()
         self._habitat_panel_delivery_tasks.clear()
         await self.gateway.close()
 
@@ -240,6 +295,22 @@ class ShutterdexRuntime:
             context = self._context_for_badge(badge)
             stored = self._ensure_session(badge, context)
             fresh = self.ui.new_session(context)
+            if context.battle is not None and not context.battle.is_terminal:
+                # A server restart/configured reconnect must not silently
+                # strand one participant at Home while a durable shared battle
+                # still expects their turn. Recreate only the lightweight
+                # local move focus and keep the authoritative battle visible.
+                battle_app = self.ui._registry.get("battle")
+                if not isinstance(battle_app, BattleApp):
+                    raise ShutterdexRuntimeError("Battle UI is not registered.")
+                fresh = BadgeSessionState(
+                    active_app="battle",
+                    app_states={
+                        **fresh.app_states,
+                        "battle": battle_app.initial_state(context),
+                    },
+                    revision=fresh.revision,
+                )
             self.store.save_session(
                 badge.badge_id,
                 active_app=fresh.active_app,
@@ -315,13 +386,190 @@ class ShutterdexRuntime:
                     lambda finished: self._clear_habitat_advance_task(htn_id, finished)
                 )
                 return dispatch
+
+            # Battle lifecycle is shared state, while the four-move focus is
+            # local state.  Let the stateless UI identify a valid intent, then
+            # run the authoritative command outside this badge lock.  Every
+            # button is ignored while a command is in flight: otherwise a
+            # second A/Home/D-pad event can look like a separate move while a
+            # Writer or Jev call is still deciding the first one.
+            if stored.active_app == "battle":
+                battle_task = self._battle_action_tasks.get(htn_id)
+                if battle_task is not None and not battle_task.done():
+                    return None
+                if (
+                    context.battle is not None
+                    and context.battle.battle_id in self._battle_preparing_ids
+                ):
+                    return None
+                if context.battle is not None and context.battle.input_locked:
+                    return None
+                battle_app = self.ui._registry.get("battle")
+                if isinstance(battle_app, BattleApp):
+                    battle_state = session.state_for("battle") or battle_app.initial_state(context)
+                    action = battle_app.requested_action(battle_state, button_event, context)
+                    if action is not None and action != "leave_terminal":
+                        if action == "select_opponent" and context.battle is None:
+                            opponent_htn_id = battle_app.selected_opponent_htn_id(
+                                battle_state, context
+                            )
+                            if opponent_htn_id is None:
+                                return None
+                            callback = self._on_battle_discovery_select
+                            if callback is None:
+                                return None
+                            pending_session = self._with_battle_discovery_selection(
+                                session, opponent_htn_id, busy=True
+                            )
+                            pending_screen = self.ui.render(pending_session, context)
+                            dispatch = await self._persist_battle_frame_locked(
+                                badge,
+                                stored,
+                                pending_session,
+                                screen=pending_screen,
+                                force=True,
+                                scroll_step=self._habitat_scroll_step,
+                            )
+                            task = asyncio.create_task(
+                                self._run_battle_discovery_selection(
+                                    htn_id=htn_id,
+                                    badge_id=badge.badge_id,
+                                    player_id=badge.player_id or "",
+                                    opponent_htn_id=opponent_htn_id,
+                                ),
+                                name=f"shutterdex-battle-select-{htn_id}",
+                            )
+                            self._battle_action_tasks[htn_id] = task
+                            task.add_done_callback(
+                                lambda finished: self._clear_battle_action_task(htn_id, finished)
+                            )
+                            return dispatch
+                        if action == "select_opponent":
+                            return None
+                        callback = self._on_battle_action
+                        if callback is None:
+                            return None
+                        move_index = (
+                            battle_app.selected_move_index(battle_state, context)
+                            if action == "select_move"
+                            else None
+                        )
+                        if action == "select_move" and context.battle is not None:
+                            self._battle_preparing_ids.add(context.battle.battle_id)
+                        pending_session = self._with_battle_feedback(session, busy=True)
+                        pending_screen = self.ui.render(pending_session, context)
+                        dispatch = await self._persist_battle_frame_locked(
+                            badge,
+                            stored,
+                            pending_session,
+                            screen=pending_screen,
+                            force=True,
+                            scroll_step=self._habitat_scroll_step,
+                        )
+                        task = asyncio.create_task(
+                            self._run_battle_action(
+                                htn_id=htn_id,
+                                player_id=badge.player_id or "",
+                                battle_id=context.battle.battle_id if context.battle else None,
+                                action=action,
+                                move_index=move_index,
+                            ),
+                            name=f"shutterdex-battle-{action}-{htn_id}",
+                        )
+                        self._battle_action_tasks[htn_id] = task
+                        task.add_done_callback(
+                            lambda finished: self._clear_battle_action_task(htn_id, finished)
+                        )
+                        return dispatch
             next_session, screen = self.ui.handle(session, button_event, context)
-            return await self._persist_and_enqueue_locked(
+            dispatch = await self._persist_and_enqueue_locked(
                 badge,
                 stored,
                 next_session,
                 screen=screen,
             )
+            if next_session.active_app == "battle" and context.battle is None:
+                # A badge has just entered the lobby. Refresh any other live
+                # lobby screens so its HTN ID appears without either person
+                # having to leave and reopen Battle.
+                self._schedule_battle_lobby_refresh()
+            return dispatch
+
+    async def _run_battle_discovery_selection(
+        self,
+        *,
+        htn_id: str,
+        badge_id: str,
+        player_id: str,
+        opponent_htn_id: str,
+    ) -> None:
+        """Persist a reciprocal lobby choice and create a battle when matched.
+
+        This is intentionally separate from ordinary Battle actions because
+        there is not a battle row yet.  The callback re-validates both badges'
+        persisted selections before it snapshots either roster.
+        """
+
+        try:
+            callback = self._on_battle_discovery_select
+            if callback is None:
+                return
+            battle = await asyncio.wait_for(
+                callback(player_id, badge_id, opponent_htn_id),
+                timeout=self.BATTLE_ACTION_TIMEOUT_SECONDS,
+            )
+            if isinstance(battle, BattleRecord):
+                await self.present_battle(battle)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            LOGGER.warning(
+                "Battle lobby selection failed for badge %s (%s)",
+                htn_id,
+                type(exc).__name__,
+            )
+        finally:
+            try:
+                async with self._lock_for(htn_id):
+                    badge = self.store.get_badge_by_htn_id(htn_id)
+                    if badge is None:
+                        return
+                    context = self._context_for_badge(badge)
+                    stored = self._ensure_session(badge, context)
+                    session = self._session_state(stored, context)
+                    next_session = self._with_battle_feedback(session, busy=False)
+                    if (
+                        htn_id in self._capture_loading_badges
+                        or not stored.canvas_active
+                        or stored.active_app != "battle"
+                    ):
+                        self.store.save_session(
+                            badge.badge_id,
+                            active_app=next_session.active_app,
+                            app_state=next_session.app_states,
+                            canvas_active=stored.canvas_active,
+                            last_render_hash=stored.last_render_hash,
+                            expected_revision=stored.revision,
+                        )
+                    else:
+                        screen = self.ui.render(next_session, context)
+                        await self._persist_battle_frame_locked(
+                            badge,
+                            stored,
+                            next_session,
+                            screen=screen,
+                            force=True,
+                            scroll_step=self._habitat_scroll_step,
+                        )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                LOGGER.warning(
+                    "Could not clear Battle lobby feedback for badge %s (%s)",
+                    htn_id,
+                    type(exc).__name__,
+                )
+            self._schedule_battle_lobby_refresh()
 
     async def _advance_habitat_in_background(self, htn_id: str, player_id: str) -> None:
         """Run the slow model work without blocking UI or marquee redraws."""
@@ -395,6 +643,209 @@ class ShutterdexRuntime:
                 htn_id,
                 type(exc).__name__,
             )
+
+    async def _run_battle_action(
+        self,
+        *,
+        htn_id: str,
+        player_id: str,
+        battle_id: str | None,
+        action: str,
+        move_index: int | None,
+    ) -> None:
+        """Run one shared-battle command and always release local feedback.
+
+        ``BadgeStore`` remains the race authority: the local task map merely
+        prevents one physical badge from queuing a confusing duplicate press
+        before the database transition has reached ``resolving``.
+        """
+
+        succeeded = False
+        result: object | None = None
+        preparing = action == "select_move" and battle_id is not None
+        cancelled = False
+        try:
+            if preparing:
+                # This task starts just after the initiating button handler
+                # releases its per-badge lock. Both participants can now see
+                # a server-owned, input-locked preparation frame while the
+                # Writer generates the three persisted candidate outcomes.
+                await self._present_preparing_battle(battle_id)
+            callback = self._on_battle_action
+            if callback is None:
+                return
+            result = await asyncio.wait_for(
+                callback(player_id, battle_id, action, move_index),
+                timeout=self.BATTLE_ACTION_TIMEOUT_SECONDS,
+            )
+            succeeded = True
+            if isinstance(result, BattleRecord):
+                if preparing:
+                    self._battle_preparing_ids.discard(result.battle_id)
+                await self.present_battle(result)
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
+        except Exception as exc:
+            LOGGER.warning(
+                "Battle action %s failed for badge %s (%s)",
+                action,
+                htn_id,
+                type(exc).__name__,
+            )
+        finally:
+            if preparing and battle_id is not None:
+                self._battle_preparing_ids.discard(battle_id)
+                # A Writer/Director failure normally makes the service abort
+                # back to ``active``. Repaint that newest durable state for
+                # *both* badges so the opponent is not left watching the
+                # short-lived preparation overlay. Do not create work while
+                # process shutdown is cancelling this task.
+                if not cancelled and not isinstance(result, BattleRecord):
+                    try:
+                        latest = self.store.get_battle(battle_id)
+                        if latest is not None:
+                            await self.present_battle(latest)
+                    except Exception as exc:
+                        LOGGER.warning(
+                            "Could not clear Battle preparation for %s (%s)",
+                            battle_id,
+                            type(exc).__name__,
+                        )
+
+        try:
+            async with self._lock_for(htn_id):
+                badge = self.store.get_badge_by_htn_id(htn_id)
+                if badge is None:
+                    return
+                context = self._context_for_badge(badge)
+                stored = self._ensure_session(badge, context)
+                session = self._session_state(stored, context)
+                next_session = self._with_battle_feedback(session, busy=False)
+                if (
+                    htn_id in self._capture_loading_badges
+                    or not stored.canvas_active
+                    or stored.active_app != "battle"
+                ):
+                    self.store.save_session(
+                        badge.badge_id,
+                        active_app=next_session.active_app,
+                        app_state=next_session.app_states,
+                        canvas_active=stored.canvas_active,
+                        last_render_hash=stored.last_render_hash,
+                        expected_revision=stored.revision,
+                    )
+                    return
+                screen = self.ui.render(next_session, context)
+                await self._persist_battle_frame_locked(
+                    badge,
+                    stored,
+                    next_session,
+                    screen=screen,
+                    force=True,
+                    scroll_step=self._habitat_scroll_step,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            LOGGER.warning(
+                "Could not update Battle feedback for badge %s (%s)",
+                htn_id,
+                type(exc).__name__,
+            )
+
+        if not succeeded:
+            # The shared status is either still active or was restored by the
+            # service's abort path.  A later button press is now safe.
+            return
+
+    @staticmethod
+    def _with_battle_feedback(
+        session: BadgeSessionState, *, busy: bool
+    ) -> BadgeSessionState:
+        """Add a transient local input lock without changing shared state."""
+
+        app_states = {app_id: dict(state) for app_id, state in session.app_states.items()}
+        battle_state = dict(app_states.get("battle", {}))
+        battle_state["busy"] = busy
+        app_states["battle"] = battle_state
+        return BadgeSessionState(
+            active_app=session.active_app,
+            app_states=app_states,
+            revision=session.revision + 1,
+        )
+
+    @staticmethod
+    def _with_battle_discovery_selection(
+        session: BadgeSessionState, opponent_htn_id: str, *, busy: bool
+    ) -> BadgeSessionState:
+        """Store a lobby choice before inspecting the other badge's choice."""
+
+        app_states = {app_id: dict(state) for app_id, state in session.app_states.items()}
+        battle_state = dict(app_states.get("battle", {}))
+        battle_state["challenge_target"] = opponent_htn_id
+        battle_state["busy"] = busy
+        app_states["battle"] = battle_state
+        return BadgeSessionState(
+            active_app=session.active_app,
+            app_states=app_states,
+            revision=session.revision + 1,
+        )
+
+    def _schedule_battle_lobby_refresh(self) -> None:
+        """Coalesce lobby redraws caused by badges entering/changing the list."""
+
+        current = self._battle_lobby_refresh_task
+        if current is not None and not current.done():
+            return
+        task = asyncio.create_task(
+            self.refresh_battle_lobbies(), name="shutterdex-battle-lobby-refresh"
+        )
+        self._battle_lobby_refresh_task = task
+
+        def clear(completed: asyncio.Task[None]) -> None:
+            if self._battle_lobby_refresh_task is completed:
+                self._battle_lobby_refresh_task = None
+
+        task.add_done_callback(clear)
+
+    async def refresh_battle_lobbies(self) -> tuple[RenderDispatch, ...]:
+        """Redraw every live, unpaired Battle lobby with fresh peer IDs."""
+
+        rendered: list[RenderDispatch] = []
+        for badge in self.store.list_badges():
+            session = self.store.get_session(badge.badge_id)
+            if (
+                badge.player_id is None
+                or session is None
+                or not session.canvas_active
+                or session.active_app != "battle"
+                or self._open_battle_for_badge(badge) is not None
+            ):
+                continue
+            try:
+                dispatch = await self.refresh_badge(
+                    badge.htn_id, only_active_app="battle"
+                )
+            except (CredentialError, GatewayError, RenderError, ShutterdexRuntimeError):
+                continue
+            if dispatch is not None:
+                rendered.append(dispatch)
+        return tuple(rendered)
+
+    def _clear_battle_action_task(
+        self, htn_id: str, completed: asyncio.Task[None]
+    ) -> None:
+        if self._battle_action_tasks.get(htn_id) is completed:
+            self._battle_action_tasks.pop(htn_id, None)
+
+    async def _present_preparing_battle(self, battle_id: str) -> None:
+        """Render the transient shared Writer-preparation lock to both sides."""
+
+        battle = self.store.get_battle(battle_id)
+        if battle is None or battle.status != "active":
+            return
+        await self.present_battle(battle)
 
     @staticmethod
     def _with_habitat_feedback(
@@ -615,6 +1066,184 @@ class ShutterdexRuntime:
                 rendered.append(result)
         return tuple(rendered)
 
+    async def present_battle(self, battle: BattleRecord) -> tuple[RenderDispatch, ...]:
+        """Put the two chosen participant badges on their authoritative scene.
+
+        A challenge may be created by a dashboard test, a future NFC
+        coordinator, or a button action.  It presents the shared state only
+        to the concrete badges recorded on the battle. A player can own a
+        Poké Ball plus a main badge (or another secondary device); neither
+        sibling should be pulled into, control, or pause this match. Legacy
+        rows without designated endpoints retain the old owner-wide fallback.
+        """
+
+        rendered: list[RenderDispatch] = []
+        for owned_badge in self._participant_badges_for_battle(battle):
+            try:
+                dispatch = await self._present_battle_on_badge(
+                    owned_badge, battle.battle_id
+                )
+            except (CredentialError, GatewayError, RenderError, ShutterdexRuntimeError) as exc:
+                LOGGER.warning(
+                    "Could not present battle %s on badge %s: %s",
+                    battle.battle_id,
+                    owned_badge.htn_id,
+                    exc,
+                )
+                continue
+            if dispatch is not None:
+                rendered.append(dispatch)
+        return tuple(rendered)
+
+    def _participant_badges_for_battle(self, battle: BattleRecord) -> tuple[Badge, ...]:
+        """Return exactly the badge endpoints named by a battle record.
+
+        Prior development databases can contain snapshot rows that predate
+        per-battle badge IDs. Those rows intentionally fall back to a player's
+        available badges, but all new challenge rows select one endpoint per
+        participant and are therefore isolated from sibling devices.
+        """
+
+        selected: list[Badge] = []
+        seen: set[str] = set()
+        for player_id, badge_id in (
+            (battle.challenger_player_id, battle.challenger_badge_id),
+            (battle.opponent_player_id, battle.opponent_badge_id),
+        ):
+            if badge_id is None:
+                candidates = self.store.list_badges_for_player(player_id)
+            else:
+                badge = self.store.get_badge(badge_id)
+                candidates = (
+                    [badge]
+                    if badge is not None and badge.player_id == player_id
+                    else []
+                )
+            for candidate in candidates:
+                if candidate.badge_id not in seen:
+                    selected.append(candidate)
+                    seen.add(candidate.badge_id)
+        return tuple(selected)
+
+    @staticmethod
+    def _is_participant_badge_for_battle(badge: Badge, battle: BattleRecord) -> bool:
+        """Whether this concrete badge is entitled to render/control a match."""
+
+        if badge.player_id == battle.challenger_player_id:
+            return (
+                battle.challenger_badge_id is None
+                or battle.challenger_badge_id == badge.badge_id
+            )
+        if badge.player_id == battle.opponent_player_id:
+            return (
+                battle.opponent_badge_id is None
+                or battle.opponent_badge_id == badge.badge_id
+            )
+        return False
+
+    async def _present_battle_on_badge(
+        self, candidate: Badge, battle_id: str
+    ) -> RenderDispatch | None:
+        """Persist a Battle focus and render it when the Canvas is live."""
+
+        async with self._lock_for(candidate.htn_id):
+            badge = self.store.require_badge(candidate.badge_id)
+            # Terminal outcomes are presented only when this transition
+            # explicitly names them. A historical row is not a UI state and
+            # must never be rediscovered when somebody opens Battle later.
+            initial_context = self._context_for_badge(badge)
+            stored = self._ensure_session(badge, initial_context)
+            explicit_battle = self.store.get_battle(battle_id)
+            if (
+                explicit_battle is not None
+                and explicit_battle.status in {"finished", "cancelled", "timed_out"}
+            ):
+                app_states = {
+                    app_id: dict(state) for app_id, state in stored.app_state.items()
+                }
+                battle_state = dict(app_states.get("battle", {}))
+                battle_state["terminal_battle_id"] = battle_id
+                battle_state["busy"] = False
+                app_states["battle"] = battle_state
+                stored = self.store.save_session(
+                    badge.badge_id,
+                    active_app="battle",
+                    app_state=app_states,
+                    canvas_active=stored.canvas_active,
+                    last_render_hash=None,
+                    expected_revision=stored.revision,
+                )
+            context = self._context_for_badge(badge)
+            if context.battle is None or context.battle.battle_id != battle_id:
+                # A newer battle may have replaced this one while a stale
+                # background task was completing. Never overwrite that newer
+                # session with an old battle presentation.
+                return None
+            session = self._session_state(stored, context)
+            app_states = {app_id: dict(state) for app_id, state in session.app_states.items()}
+            battle_state = app_states.get("battle")
+            if battle_state is None:
+                battle_app = self.ui._registry.get("battle")
+                if not isinstance(battle_app, BattleApp):
+                    raise ShutterdexRuntimeError("Battle UI is not registered.")
+                battle_state = dict(battle_app.initial_state(context))
+            # A reciprocal lobby selection is complete now. The durable
+            # battle phase supplies its own lock, so a stale local "busy"
+            # flag must not disguise a new challenge as Director resolution.
+            battle_state["busy"] = False
+            battle_state["challenge_target"] = ""
+            if context.battle is not None and not context.battle.is_terminal:
+                battle_state["terminal_battle_id"] = ""
+            app_states["battle"] = dict(battle_state)
+            next_session = BadgeSessionState(
+                active_app="battle",
+                app_states=app_states,
+                revision=session.revision + 1,
+            )
+            if candidate.htn_id in self._capture_loading_badges or not stored.canvas_active:
+                self.store.save_session(
+                    badge.badge_id,
+                    active_app=next_session.active_app,
+                    app_state=next_session.app_states,
+                    canvas_active=stored.canvas_active,
+                    last_render_hash=stored.last_render_hash,
+                    expected_revision=stored.revision,
+                )
+                return None
+            await self.ensure_registered(badge.htn_id)
+            screen = self.ui.render(next_session, context)
+            return await self._persist_battle_frame_locked(
+                badge,
+                stored,
+                next_session,
+                screen=screen,
+                force=True,
+                scroll_step=self._habitat_scroll_step,
+            )
+
+    async def _expire_battles_in_background(self) -> None:
+        """Periodically make persisted ready/turn/disconnect deadlines real."""
+
+        try:
+            while True:
+                await asyncio.sleep(self.BATTLE_EXPIRY_INTERVAL_SECONDS)
+                callback = self._on_battle_expire
+                if callback is None:
+                    continue
+                expired = await callback()
+                if isinstance(expired, BattleRecord):
+                    await self.present_battle(expired)
+                elif isinstance(expired, Iterable) and not isinstance(expired, (str, bytes)):
+                    for battle in expired:
+                        if isinstance(battle, BattleRecord):
+                            await self.present_battle(battle)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # The rows remain durable. A later heartbeat will retry expiry;
+            # one broken screen or provider integration must not stop it.
+            LOGGER.warning("Battle deadline worker stopped (%s)", type(exc).__name__)
+
     async def _scroll_habitat_labels(self) -> None:
         """Redraw active Habitat and Dex marquee fields at a safe low rate."""
 
@@ -803,6 +1432,23 @@ class ShutterdexRuntime:
 
         if event.event_type in {"connected", "online", "transport_reconnected"}:
             self.store.mark_badge_seen(badge.badge_id, online=True)
+            battle = self._open_battle_for_badge(badge)
+            if (
+                battle is not None
+                and battle.status == "disconnected"
+                and battle.disconnected_player_id == badge.player_id
+                and self._on_battle_reconnect is not None
+            ):
+                try:
+                    restored = await self._on_battle_reconnect(badge.player_id)
+                    if isinstance(restored, BattleRecord):
+                        await self.present_battle(restored)
+                except Exception as exc:
+                    LOGGER.warning(
+                        "Could not restore Battle connection for badge %s (%s)",
+                        badge.htn_id,
+                        type(exc).__name__,
+                    )
             if event.event_type == "transport_reconnected":
                 try:
                     await self.refresh_badge(badge.htn_id)
@@ -812,6 +1458,22 @@ class ShutterdexRuntime:
 
         if event.event_type in {"disconnected", "offline", "transport_error"}:
             self.store.mark_badge_seen(badge.badge_id, online=False)
+            battle = self._open_battle_for_badge(badge)
+            if (
+                battle is not None
+                and battle.status != "disconnected"
+                and self._on_battle_disconnect is not None
+            ):
+                try:
+                    disconnected = await self._on_battle_disconnect(badge.player_id)
+                    if isinstance(disconnected, BattleRecord):
+                        await self.present_battle(disconnected)
+                except Exception as exc:
+                    LOGGER.warning(
+                        "Could not pause Battle for disconnected badge %s (%s)",
+                        badge.htn_id,
+                        type(exc).__name__,
+                    )
             return
 
         if event.event_type == "mode":
@@ -855,6 +1517,97 @@ class ShutterdexRuntime:
             force=force,
             scroll_step=scroll_step,
         )
+
+    async def _persist_battle_frame_locked(
+        self,
+        badge: Badge,
+        stored: BadgeSession,
+        session: BadgeSessionState,
+        *,
+        screen,
+        force: bool = False,
+        scroll_step: int = 0,
+    ) -> RenderDispatch:
+        """Persist the newest Battle frame without queuing stale full scenes.
+
+        Battle transitions can happen in quick succession: a local input lock,
+        a durable ``resolving`` state, then a selected outcome. A badge has a
+        deliberately bounded command queue, so once one complete frame is in
+        flight we persist only the newest desired state and arrange one redraw
+        after that frame reaches the device. This is lossless for state and
+        prevents a slow Wi-Fi badge from replaying outdated battle screens.
+
+        The caller already owns ``badge.htn_id``'s lock.
+        """
+
+        delivery = self._latest_delivery_tasks.get(badge.htn_id)
+        queued_refresh = self._battle_refresh_tasks.get(badge.htn_id)
+        if (
+            (delivery is not None and not delivery.done())
+            or (queued_refresh is not None and not queued_refresh.done())
+        ):
+            render_hash = self.renderer.fingerprint(screen, scroll_step=scroll_step)
+            saved = self.store.save_session(
+                badge.badge_id,
+                active_app=session.active_app,
+                app_state=session.app_states,
+                canvas_active=True,
+                # Deliberately invalidate the old frame fingerprint. The
+                # coalesced refresh must paint this newer shared state even if
+                # it otherwise has the same visual shape as a prior scene.
+                last_render_hash=None,
+                expected_revision=stored.revision,
+            )
+            if queued_refresh is None or queued_refresh.done():
+                self._schedule_battle_refresh(badge.htn_id, delivery)
+            return RenderDispatch(
+                badge_id=badge.badge_id,
+                htn_id=badge.htn_id,
+                scene=screen.scene,
+                session_revision=saved.revision,
+                queued_commands=0,
+                render_hash=render_hash,
+            )
+        return await self._persist_and_enqueue_locked(
+            badge,
+            stored,
+            session,
+            screen=screen,
+            force=force,
+            scroll_step=scroll_step,
+        )
+
+    def _schedule_battle_refresh(
+        self, htn_id: str, delivery: asyncio.Task[None] | None
+    ) -> None:
+        """Redraw one latest Battle state once the preceding frame is gone."""
+
+        async def refresh_after_delivery() -> None:
+            try:
+                if delivery is not None:
+                    await delivery
+                # Let a delivery completion callback update its bookkeeping
+                # before we sample the persisted state under the badge lock.
+                await asyncio.sleep(0)
+                await self.refresh_badge(htn_id, only_active_app="battle")
+            except asyncio.CancelledError:
+                raise
+            except (CredentialError, GatewayError, RenderError, ShutterdexRuntimeError) as exc:
+                LOGGER.warning("Could not coalesce Battle frame for badge %s: %s", htn_id, exc)
+
+        task = asyncio.create_task(
+            refresh_after_delivery(), name=f"shutterdex-battle-refresh-{htn_id}"
+        )
+        self._battle_refresh_tasks[htn_id] = task
+        task.add_done_callback(
+            lambda completed: self._clear_battle_refresh_task(htn_id, completed)
+        )
+
+    def _clear_battle_refresh_task(
+        self, htn_id: str, completed: asyncio.Task[None]
+    ) -> None:
+        if self._battle_refresh_tasks.get(htn_id) is completed:
+            self._battle_refresh_tasks.pop(htn_id, None)
 
     async def _persist_and_enqueue_locked(
         self,
@@ -936,7 +1689,17 @@ class ShutterdexRuntime:
 
         task = asyncio.create_task(watch(), name=f"shutterdex-frame-{htn_id}")
         self._delivery_tasks.add(task)
-        task.add_done_callback(self._delivery_tasks.discard)
+
+        # Keep one per-badge reference for Battle's full-frame coalescer. The
+        # general set still owns shutdown/cancellation for every scene.
+        self._latest_delivery_tasks[htn_id] = task
+
+        def completed(finished: asyncio.Task[None]) -> None:
+            self._delivery_tasks.discard(finished)
+            if self._latest_delivery_tasks.get(htn_id) is finished:
+                self._latest_delivery_tasks.pop(htn_id, None)
+
+        task.add_done_callback(completed)
         return task
 
     def _context_for_badge(self, badge: Badge) -> BadgeUiContext:
@@ -997,6 +1760,152 @@ class ShutterdexRuntime:
             creatures=tuple(creatures),
             events=tuple(visible_events),
             world_revision=revision,
+            battle=self._battle_view_for_badge(badge),
+            battle_opponents=self._battle_opponents_for_badge(badge),
+        )
+
+    def _battle_opponents_for_badge(self, badge: Badge) -> tuple[BattleOpponent, ...]:
+        """Return other live Battle-lobby endpoints, identified by HTN ID.
+
+        A badge is eligible only while it has a Canvas session actively open
+        on Battle and no open shared battle. This is server-side presence, not
+        radio proximity: the two people still confirm each other by choosing
+        the visible ID on their own badges.
+        """
+
+        if badge.player_id is None or self._open_battle_for_badge(badge) is not None:
+            return ()
+        opponents: list[BattleOpponent] = []
+        for candidate in self.store.list_badges():
+            if (
+                candidate.badge_id == badge.badge_id
+                or candidate.player_id is None
+                or candidate.player_id == badge.player_id
+            ):
+                continue
+            session = self.store.get_session(candidate.badge_id)
+            if (
+                session is None
+                or not session.canvas_active
+                or session.active_app != "battle"
+                or self._open_battle_for_badge(candidate) is not None
+            ):
+                continue
+            opponents.append(BattleOpponent(candidate.htn_id))
+        # The 320x240 lobby deliberately exposes four whole touch-free rows.
+        # Returning the same bound keeps focus from moving to an invisible
+        # peer; pagination can be added later without weakening consent.
+        return tuple(sorted(opponents, key=lambda opponent: opponent.htn_id.lower())[:4])
+
+    def _open_battle_for_badge(self, badge: Badge) -> BattleRecord | None:
+        """Read a nonterminal battle only when this badge is its endpoint."""
+
+        if badge.player_id is None:
+            return None
+        battle = self.store.get_open_battle_for_player(badge.player_id)
+        if battle is None or not self._is_participant_badge_for_battle(badge, battle):
+            return None
+        return battle
+
+    def _battle_view_for_badge(self, badge: Badge) -> BattleView | None:
+        """Map a durable battle record into one participant-relative view."""
+
+        player_id = badge.player_id
+        if player_id is None:
+            return None
+        battle = self._open_battle_for_badge(badge)
+        if battle is None:
+            # Terminal results are one-shot presentation state. Do *not* look
+            # at battle history: an audit record must never decide the next
+            # lobby a player sees.
+            session = self.store.get_session(badge.badge_id)
+            terminal_battle_id = ""
+            if session is not None:
+                battle_state = session.app_state.get("battle", {})
+                if isinstance(battle_state, dict):
+                    value = battle_state.get("terminal_battle_id", "")
+                    if isinstance(value, str):
+                        terminal_battle_id = value.strip()
+            if terminal_battle_id:
+                candidate = self.store.get_battle(terminal_battle_id)
+                if candidate is not None and candidate.status in {
+                    "finished",
+                    "cancelled",
+                    "timed_out",
+                }:
+                    battle = candidate
+        if battle is not None and not self._is_participant_badge_for_battle(badge, battle):
+            return None
+        if battle is None:
+            return None
+        if player_id == battle.challenger_player_id:
+            viewer_name = battle.challenger_display_name
+            viewer_roster = battle.challenger_roster
+            viewer_ready = battle.challenger_ready
+            opponent_id = battle.opponent_player_id
+            opponent_name = battle.opponent_display_name
+            opponent_roster = battle.opponent_roster
+            opponent_ready = battle.opponent_ready
+            role = "challenger"
+        elif player_id == battle.opponent_player_id:
+            viewer_name = battle.opponent_display_name
+            viewer_roster = battle.opponent_roster
+            viewer_ready = battle.opponent_ready
+            opponent_id = battle.challenger_player_id
+            opponent_name = battle.challenger_display_name
+            opponent_roster = battle.challenger_roster
+            opponent_ready = battle.challenger_ready
+            role = "opponent"
+        else:
+            return None
+        view = BattleView(
+            battle_id=battle.battle_id,
+            phase=battle.status,
+            viewer_player_id=player_id,
+            viewer_player_name=viewer_name,
+            opponent_player_id=opponent_id,
+            opponent_player_name=opponent_name,
+            viewer_role=role,
+            viewer_ready=viewer_ready,
+            opponent_ready=opponent_ready,
+            active_player_id=battle.current_player_id,
+            viewer=self._battle_combatant_view(viewer_roster),
+            opponent=self._battle_combatant_view(opponent_roster),
+            turn_number=battle.turn_number,
+            rationale=battle.last_visible_rationale or "",
+            last_action=battle.last_visible_rationale or "",
+            notice=battle.notice or "",
+            winner_player_id=battle.winner_player_id,
+            end_reason=battle.end_reason or "",
+            input_locked=battle.status in {"resolving", "disconnected"},
+        )
+        if (
+            battle.battle_id in self._battle_preparing_ids
+            and view.normalized_phase == "active"
+        ):
+            return replace(
+                view,
+                phase="resolving",
+                input_locked=True,
+                notice="The Director is preparing this turn.",
+            )
+        return view
+
+    def _battle_combatant_view(
+        self, roster: BattleRosterSnapshot
+    ) -> BattleCombatantView:
+        snapshot = roster.active_pokemon
+        return BattleCombatantView(
+            pokemon_id=snapshot.pokemon_id,
+            name=snapshot.name,
+            element=snapshot.types[0] if snapshot.types else "neutral",
+            hp=max(0, snapshot.current_hp),
+            max_hp=snapshot.max_hp,
+            moves=snapshot.moves,
+            sprite_url=self._sprite_source(snapshot.sprite_path),
+            roster_index=roster.active_index,
+            roster_size=len(roster.pokemon),
+            fainted=snapshot.fainted,
         )
 
     def _card_for(self, pokemon: PokemonRecord) -> PokemonCard:

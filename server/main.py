@@ -17,8 +17,9 @@ from dotenv import load_dotenv
 
 from badge_export import badge_snapshot_text
 from badge_renderer import ScreenRenderer, SpriteImageResolver
-from badge_store import Badge, BadgeStore, pokemon_from_dict
+from badge_store import Badge, BadgeStore, ConflictError, pokemon_from_dict
 from badge_ui import BadgeUi
+from battle_service import BattleResolutionResult, BattleService
 from credential_vault import CredentialError, FernetCredentialVault, UnavailableCredentialVault
 from htn_gateway import HTNBadgeGateway, HTNServiceWebSocketTransport, InMemoryBadgeTransport
 from models import Pokemon, SimulationTickRequest, SimulationTickResult, WorldSnapshot
@@ -377,6 +378,136 @@ async def lifespan(app: FastAPI):
         app.state.shutterdex_store,
         backboard_api_key=os.getenv("BACKBOARD_API_KEY"),
     )
+
+    async def publish_battle_resolution_started(battle, turn) -> None:
+        """Show both badges the durable Director lock before it resolves."""
+
+        del turn
+        active_runtime = getattr(app.state, "shutterdex_runtime", None)
+        if active_runtime is not None:
+            await active_runtime.present_battle(battle)
+
+    app.state.battle_service = BattleService(
+        app.state.shutterdex_store,
+        backboard_api_key=os.getenv("BACKBOARD_API_KEY"),
+        on_resolution_started=publish_battle_resolution_started,
+    )
+
+    async def handle_badge_battle_action(
+        player_id: str,
+        battle_id: str | None,
+        action: str,
+        move_index: int | None,
+    ):
+        """Translate a trusted badge UI intent into one store-backed action."""
+
+        if not battle_id:
+            raise ValueError("Choose a waiting badge before starting a battle.")
+        service = app.state.battle_service
+        if action in {"accept_challenge", "ready"}:
+            return await service.ready(battle_id, player_id)
+        if action == "cancel_battle":
+            return await service.cancel(battle_id, player_id)
+        if action == "select_move":
+            if move_index is None:
+                raise ValueError("Choose one of the four moves first.")
+            result = await service.resolve_move(battle_id, player_id, move_index)
+            if not isinstance(result, BattleResolutionResult):
+                raise RuntimeError("Battle service returned an invalid resolution.")
+            return result.battle
+        raise ValueError("That Battle action is not available right now.")
+
+    async def handle_badge_battle_discovery_selection(
+        player_id: str, badge_id: str, opponent_htn_id: str
+    ):
+        """Create a battle only after two waiting badges choose each other.
+
+        The lobby stores a harmless HTN ID choice in each badge's own session.
+        This handler treats that state as a consent signal, revalidates it on
+        the server, then immediately snapshots and readies both rosters. No
+        dashboard request, credential, or BLE/NFC transport participates in
+        challenge creation.
+        """
+
+        store = app.state.shutterdex_store
+        source = store.require_badge(badge_id)
+        if source.player_id != player_id:
+            raise ValueError("This badge is not paired to the selecting player.")
+        target = store.require_badge_by_htn_id(opponent_htn_id)
+        if target.player_id is None or target.player_id == player_id:
+            raise ValueError("Choose another player's waiting badge.")
+
+        source_session = store.get_session(source.badge_id)
+        target_session = store.get_session(target.badge_id)
+        if (
+            source_session is None
+            or target_session is None
+            or not source_session.canvas_active
+            or not target_session.canvas_active
+            or source_session.active_app != "battle"
+            or target_session.active_app != "battle"
+        ):
+            return None
+
+        def selected_target(session) -> str:
+            battle_state = session.app_state.get("battle", {})
+            if not isinstance(battle_state, Mapping):
+                return ""
+            target_id = battle_state.get("challenge_target", "")
+            return target_id.strip() if isinstance(target_id, str) else ""
+
+        # The initiating selection was durably written before this callback.
+        # The other badge must independently have chosen this exact HTN ID.
+        if (
+            selected_target(source_session) != target.htn_id
+            or selected_target(target_session) != source.htn_id
+        ):
+            return None
+
+        service = app.state.battle_service
+        try:
+            battle = await service.challenge(
+                player_id,
+                target.player_id,
+                challenger_badge_id=source.badge_id,
+                opponent_badge_id=target.badge_id,
+                notice="Both badges selected each other. Battle starting.",
+            )
+            # Reciprocal selection is the ready check: neither player needs
+            # a second, redundant confirmation after selecting the same peer.
+            battle = await service.ready(battle.battle_id, player_id)
+            return await service.ready(battle.battle_id, target.player_id)
+        except ConflictError:
+            # Both A presses can arrive in either order. If the other task
+            # created this exact pair first, present its one shared battle;
+            # otherwise preserve the conflict rather than attaching a badge
+            # to an unrelated match.
+            existing = store.get_open_battle_for_player(player_id)
+            if (
+                existing is not None
+                and {existing.challenger_player_id, existing.opponent_player_id}
+                == {player_id, target.player_id}
+                and {existing.challenger_badge_id, existing.opponent_badge_id}
+                == {source.badge_id, target.badge_id}
+            ):
+                return existing
+            raise
+
+    async def handle_badge_battle_disconnect(player_id: str):
+        return await app.state.battle_service.disconnect_player(player_id)
+
+    async def handle_badge_battle_reconnect(player_id: str):
+        battle = app.state.shutterdex_store.get_open_battle_for_player(player_id)
+        if (
+            battle is None
+            or battle.status != "disconnected"
+            or battle.disconnected_player_id != player_id
+        ):
+            return None
+        return await app.state.battle_service.reconnect(
+            battle.battle_id, player_id, expected_revision=battle.revision
+        )
+
     app.state.shutterdex_runtime = ShutterdexRuntime(
         store=app.state.shutterdex_store,
         gateway=app.state.shutterdex_gateway,
@@ -387,6 +518,11 @@ async def lifespan(app: FastAPI):
         ),
         sprites=app.state.sprites,
         on_habitat_advance=app.state.player_simulation.tick,
+        on_battle_action=handle_badge_battle_action,
+        on_battle_discovery_select=handle_badge_battle_discovery_selection,
+        on_battle_disconnect=handle_badge_battle_disconnect,
+        on_battle_reconnect=handle_badge_battle_reconnect,
+        on_battle_expire=app.state.battle_service.expire_due,
     )
     app.state.configured_badge_retry_tasks = []
     app.state.pokeball_generation_lock = asyncio.Lock()
