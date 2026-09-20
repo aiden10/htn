@@ -390,6 +390,52 @@ class WifiRuntimeTests(unittest.IsolatedAsyncioTestCase):
         await self.runtime.dismiss_capture_offer("capture_offer_01", restore=True)
         self.assertIsNone(self.runtime._capture_offer)
 
+    async def test_new_screen_resets_that_badges_marquee_to_its_first_character(self) -> None:
+        player = self.store.create_player("Player", player_id="player_scroll")
+        badge = await self.runtime.pair_badge(
+            player_id=player.player_id, htn_id="scroll1", app_key="key-scroll"
+        )
+        await self.runtime.launch(badge.htn_id)
+        # Simulate a long-running server before this badge navigates to a
+        # fresh screen. Its first frame must not inherit that global offset.
+        self.runtime._habitat_scroll_step = 240
+        await self.runtime.handle_button(badge.htn_id, "a")
+
+        self.assertEqual(self.runtime._relative_scroll_step(badge.htn_id), 0)
+        self.runtime._habitat_scroll_step += 8
+        self.assertEqual(self.runtime._relative_scroll_step(badge.htn_id), 8)
+
+    async def test_dex_start_release_requires_a_confirmation_and_b_cancels(self) -> None:
+        player = self.store.create_player("Release Player", player_id="player_release")
+        badge = await self.runtime.pair_badge(
+            player_id=player.player_id, htn_id="release1", app_key="key-release"
+        )
+        self.store.create_pokemon(
+            _pokemon(
+                pokemon_id="mon_release",
+                owner_player_id=player.player_id,
+                captured_by_badge_id=badge.badge_id,
+                name="Mossbyte",
+                element="earth",
+            )
+        )
+        await self.runtime.launch(badge.htn_id)
+        await self.runtime.handle_button(badge.htn_id, "a")  # Home -> Dex
+
+        await self.runtime.handle_button(badge.htn_id, "start")
+        session = self.store.get_session(badge.badge_id)
+        assert session is not None
+        self.assertTrue(session.app_state["dex"]["release_confirm"])
+        await self.runtime.handle_button(badge.htn_id, "b")
+        self.assertEqual(len(self.store.list_pokemon_for_player(player.player_id)), 1)
+
+        await self.runtime.handle_button(badge.htn_id, "start")
+        await self.runtime.handle_button(badge.htn_id, "a")
+        self.assertEqual(self.store.list_pokemon_for_player(player.player_id), [])
+        session = self.store.get_session(badge.badge_id)
+        assert session is not None
+        self.assertFalse(session.app_state["dex"]["release_confirm"])
+
     async def test_habitat_a_advances_only_that_badges_world(self) -> None:
         player = self.store.create_player("Player A", player_id="player_a")
         badge = await self.runtime.pair_badge(

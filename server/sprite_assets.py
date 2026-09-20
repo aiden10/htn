@@ -90,6 +90,12 @@ class SpriteStore:
         self.badge_path(key).write_bytes(to_lvgl_rgb565a8(rgba))
         return key
 
+    def delete(self, sprite_key: str) -> None:
+        """Remove a released Pokemon's private source and badge sprite cache."""
+
+        self.source_path(sprite_key).unlink(missing_ok=True)
+        self.badge_path(sprite_key).unlink(missing_ok=True)
+
 
 def to_lvgl_rgb565a8(image: Image.Image) -> bytes:
     """Encode a 32x32 RGBA image in the LVGL binary format used by the badge."""

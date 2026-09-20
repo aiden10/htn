@@ -40,6 +40,7 @@ from badge_ui import (
     Button,
     ButtonEvent,
     Clear,
+    DexApp,
     HabitatCreature,
     Leds,
     PokemonCard,
@@ -168,6 +169,10 @@ class ShutterdexRuntime:
         self._capture_loading_badges: set[str] = set()
         self._capture_loading_tasks: dict[str, asyncio.Task[None]] = {}
         self._capture_offer: CaptureOffer | None = None
+        # The renderer takes a numeric marquee offset, but a global offset
+        # made a newly selected creature inherit another screen's position.
+        # Keep one lightweight origin per physical badge instead.
+        self._scroll_origins: dict[str, int] = {}
         self._habitat_scroll_step = 0
         self._started = False
 
@@ -237,6 +242,7 @@ class ShutterdexRuntime:
             await asyncio.gather(*self._capture_loading_tasks.values(), return_exceptions=True)
         self._capture_loading_tasks.clear()
         self._capture_loading_badges.clear()
+        self._scroll_origins.clear()
         if self._capture_offer is not None and not self._capture_offer.result.done():
             self._capture_offer.result.set_result(None)
         self._capture_offer = None
@@ -388,6 +394,19 @@ class ShutterdexRuntime:
             stored = self._ensure_session(badge, context)
             session = self._session_state(stored, context)
             button_event = ButtonEvent.from_raw(button, repeat=repeat)
+            if stored.active_app == "dex":
+                dex_app = self.ui._registry.get("dex")
+                dex_state = session.state_for("dex")
+                if (
+                    isinstance(dex_app, DexApp)
+                    and dex_state is not None
+                    and bool(dex_state.get("release_confirm", False))
+                    and button_event.button is Button.A
+                    and not button_event.repeat
+                ):
+                    return await self._release_dex_selection_locked(
+                        badge, stored, session, context, dex_state
+                    )
             running = self._habitat_advance_tasks.get(htn_id)
             if (
                 stored.active_app == "habitat"
@@ -542,6 +561,79 @@ class ShutterdexRuntime:
                 # having to leave and reopen Battle.
                 self._schedule_battle_lobby_refresh()
             return dispatch
+
+    async def _release_dex_selection_locked(
+        self,
+        badge: Badge,
+        stored: BadgeSession,
+        session: BadgeSessionState,
+        context: BadgeUiContext,
+        dex_state: dict[str, object],
+    ) -> RenderDispatch:
+        """Release the confirmed owned Dex creature while this badge is locked."""
+
+        if badge.player_id is None or not context.pokemon:
+            raise BadgeUnassignedError("Only an assigned player can release a creature.")
+        selected = min(
+            max(0, int(dex_state.get("selected", 0))), len(context.pokemon) - 1
+        )
+        pokemon_id = context.pokemon[selected].pokemon_id
+        released = None
+        notice = ""
+        try:
+            released = await asyncio.to_thread(
+                self.store.release_pokemon,
+                pokemon_id,
+                expected_owner_player_id=badge.player_id,
+            )
+            if released.sprite_path:
+                try:
+                    await asyncio.to_thread(self.sprites.delete, released.sprite_path)
+                except (OSError, SpriteError) as exc:
+                    # Database ownership is already final. An orphaned cached
+                    # image is harmless and can never be rendered again.
+                    LOGGER.warning("Could not remove released sprite (%s)", type(exc).__name__)
+            notice = f"{released.name} was released."
+        except ConflictError:
+            notice = "Release unavailable during an active battle."
+        except (NotFoundError, ValueError):
+            notice = "That creature is no longer available."
+
+        fresh_context = self._context_for_badge(badge)
+        next_dex_state = dict(dex_state)
+        next_dex_state["selected"] = min(
+            selected, max(0, len(fresh_context.pokemon) - 1)
+        )
+        next_dex_state["release_confirm"] = False
+        next_dex_state["release_notice"] = notice
+        next_session = BadgeSessionState(
+            active_app=session.active_app,
+            app_states={**session.app_states, "dex": next_dex_state},
+            revision=session.revision + 1,
+        )
+        screen = self.ui.render(next_session, fresh_context)
+        dispatch = await self._persist_and_enqueue_locked(
+            badge, stored, next_session, screen=screen, force=True
+        )
+        if released is not None:
+            task = asyncio.create_task(
+                self._refresh_player_after_release(badge.player_id, except_htn_id=badge.htn_id),
+                name=f"shutterdex-release-refresh-{badge.htn_id}",
+            )
+            self._delivery_tasks.add(task)
+            task.add_done_callback(self._delivery_tasks.discard)
+        return dispatch
+
+    async def _refresh_player_after_release(self, player_id: str, *, except_htn_id: str) -> None:
+        """Refresh sibling player badges without recursively re-locking this one."""
+
+        for sibling in self.store.list_badges_for_player(player_id):
+            if sibling.htn_id == except_htn_id:
+                continue
+            try:
+                await self.refresh_badge(sibling.htn_id)
+            except (CredentialError, GatewayError, RenderError, ShutterdexRuntimeError) as exc:
+                LOGGER.warning("Could not refresh badge after release: %s", exc)
 
     async def _run_battle_discovery_selection(
         self,
@@ -1072,15 +1164,15 @@ class ShutterdexRuntime:
         element = offer.element.upper()[:18] or "MYSTERY"
         return Screen(
             (
-                Clear("#101827"),
-                Leds(("#F8C94A", "#5BC0EB", "#F8C94A"), brightness=42),
-                Rect(16, 20, 288, 200, "#1D2B45", radius=16),
-                Rect(34, 43, 252, 9, "#F8C94A", radius=5),
-                Text(38, 73, "WILD CAPTURE!", "#F8C94A", size=19, max_width=244),
-                Text(38, 105, offer.name, "#F6F7FB", size=24, max_width=244, scroll=True),
-                Text(38, 136, offer.species, "#C9D6E6", size=12, max_width=244, scroll=True),
-                Text(38, 158, f"{element} - {offer.rarity.upper()}", "#5BC0EB", size=11, max_width=244),
-                Text(38, 191, "A CLAIM   B PASS", "#EAF6FF", size=13, max_width=244),
+                Clear("#241F1B"),
+                Leds(("#B3E3A7", "#DECBB5", "#B3E3A7"), brightness=42),
+                Rect(16, 20, 288, 200, "#39302A", radius=16),
+                Rect(34, 43, 252, 9, "#B3E3A7", radius=5),
+                Text(38, 73, "WILD CAPTURE!", "#B3E3A7", size=19, max_width=244),
+                Text(38, 105, offer.name, "#FFF8F0", size=24, max_width=244, scroll=True),
+                Text(38, 136, offer.species, "#C7B7A7", size=12, max_width=244, scroll=True),
+                Text(38, 158, f"{element} - {offer.rarity.upper()}", "#DECBB5", size=11, max_width=244),
+                Text(38, 191, "A CLAIM   B PASS", "#FFF8F0", size=13, max_width=244),
             ),
             scene="capture-offer",
         )
@@ -1138,33 +1230,33 @@ class ShutterdexRuntime:
             (
                 "CAPTURE RECEIVED",
                 "Storing the Shutterball snapshot...",
-                "#5BC0EB",
-                ("#5BC0EB", "#5BC0EB", "#1B4965"),
+                "#B3E3A7",
+                ("#B3E3A7", "#DECBB5", "#B3E3A7"),
             ),
             (
                 "IDENTIFYING",
                 "Finding the creature inside...",
-                "#F8C94A",
-                ("#F8C94A", "#1B4965", "#F8C94A"),
+                "#DECBB5",
+                ("#DECBB5", "#B3E3A7", "#DECBB5"),
             ),
             (
                 "SUMMONING",
                 "Giving your new Pokemon a form...",
-                "#C77DFF",
-                ("#C77DFF", "#C77DFF", "#F8C94A"),
+                "#B3E3A7",
+                ("#B3E3A7", "#DECBB5", "#B3E3A7"),
             ),
         )[phase % 3]
         dot_count = phase % 3 + 1
         return Screen(
             (
-                Clear("#101827"),
+            Clear("#241F1B"),
                 Leds(leds, brightness=40),
-                Rect(18, 25, 284, 190, "#1D2B45", radius=16),
+                Rect(18, 25, 284, 190, "#39302A", radius=16),
                 Rect(35, 48, 250, 10, accent, radius=5),
-                Text(38, 78, "SHUTTERBALL", "#EAF6FF", size=13, max_width=244),
+                Text(38, 78, "SHUTTERBALL", "#FFF8F0", size=13, max_width=244),
                 Text(38, 108, title, accent, size=20, max_width=244),
-                Text(38, 142, detail, "#C9D6E6", size=12, max_width=244, scroll=True),
-                Text(38, 181, "PLEASE WAIT" + "." * dot_count, "#8FA4BE", size=11, max_width=244),
+                Text(38, 142, detail, "#C7B7A7", size=12, max_width=244, scroll=True),
+                Text(38, 181, "PLEASE WAIT" + "." * dot_count, "#C7B7A7", size=11, max_width=244),
             ),
             scene="capture-loading",
         )
@@ -1474,7 +1566,7 @@ class ShutterdexRuntime:
             )
             commands = self.renderer.render(
                 Screen(panel_operations, scene="habitat-panel"),
-                scroll_step=scroll_step,
+                scroll_step=self._relative_scroll_step(htn_id),
             )
             tickets = await self._enqueue_frame(badge.htn_id, commands)
             delivery = self._watch_delivery(badge.htn_id, tickets)
@@ -1552,7 +1644,8 @@ class ShutterdexRuntime:
                 description,
             )
             commands = self.renderer.render(
-                Screen(operations, scene="dex-description"), scroll_step=scroll_step
+                Screen(operations, scene="dex-description"),
+                scroll_step=self._relative_scroll_step(htn_id),
             )
             tickets = await self._enqueue_frame(badge.htn_id, commands)
             delivery = self._watch_delivery(badge.htn_id, tickets)
@@ -1788,8 +1881,13 @@ class ShutterdexRuntime:
         screen even if the network drops halfway through this particular frame.
         """
 
-        commands = self.renderer.render(screen, scroll_step=scroll_step)
-        render_hash = self.renderer.fingerprint(screen, scroll_step=scroll_step)
+        # A complete scene is a new visual context: start every marquee at its
+        # first character, then let the small periodic redraws advance it from
+        # this badge-specific origin. ``scroll_step`` is intentionally not
+        # carried into a new screen.
+        self._scroll_origins[badge.htn_id] = self._habitat_scroll_step
+        commands = self.renderer.render(screen, scroll_step=0)
+        render_hash = self.renderer.fingerprint(screen, scroll_step=0)
         needs_draw = force or not stored.canvas_active or stored.last_render_hash != render_hash
         saved = self.store.save_session(
             badge.badge_id,
@@ -1825,6 +1923,12 @@ class ShutterdexRuntime:
             # can draw it.  Do not conceal a queue-full/not-registered error.
             raise
         return tuple(tickets)
+
+    def _relative_scroll_step(self, htn_id: str) -> int:
+        """Return the marquee distance since this badge's last full screen."""
+
+        origin = self._scroll_origins.get(htn_id, self._habitat_scroll_step)
+        return max(0, self._habitat_scroll_step - origin)
 
     def _watch_delivery(
         self, htn_id: str, tickets: Iterable[CommandTicket]

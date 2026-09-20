@@ -1354,6 +1354,94 @@ class BadgeStore:
         assert updated is not None
         return _pokemon_from_row(updated)
 
+    def release_pokemon(
+        self, pokemon_id: str, *, expected_owner_player_id: str
+    ) -> PokemonRecord:
+        """Permanently release one owned Pokemon and its dependent world data.
+
+        Battle rosters are durable JSON snapshots, but a live battle must not
+        lose a creature underneath it. Finished battle records remain intact;
+        their historical turn text carries the released Pokemon's ID as plain
+        audit data rather than a foreign key.
+        """
+
+        pokemon_id = _identifier(pokemon_id, "pokemon_id")
+        owner = _identifier(expected_owner_player_id, "expected_owner_player_id")
+        with self._transaction():
+            row = self.connection.execute(
+                "SELECT * FROM pokemon WHERE pokemon_id = ?", (pokemon_id,)
+            ).fetchone()
+            if row is None:
+                raise NotFoundError(f"Pokemon {pokemon_id!r} was not found.")
+            if row["owner_player_id"] != owner:
+                raise OwnershipError("Pokemon does not belong to the expected player.")
+            self._require_no_open_battle_in_transaction(owner)
+            # A released creature should no longer appear in the Habitat's
+            # current story. Its world state cascades from the final delete;
+            # these two references deliberately use RESTRICT for normal data
+            # integrity, so release explicitly retires their old rows first.
+            self.connection.execute(
+                "UPDATE simulation_events SET target_pokemon_id = NULL WHERE target_pokemon_id = ?",
+                (pokemon_id,),
+            )
+            self.connection.execute(
+                "DELETE FROM simulation_events WHERE actor_pokemon_id = ?", (pokemon_id,)
+            )
+            self.connection.execute(
+                "DELETE FROM pokemon_transfers WHERE pokemon_id = ?", (pokemon_id,)
+            )
+            deleted = self.connection.execute(
+                "DELETE FROM pokemon WHERE pokemon_id = ? AND owner_player_id = ?",
+                (pokemon_id, owner),
+            )
+            if deleted.rowcount != 1:
+                raise OwnershipError("Pokemon owner changed before release was applied.")
+        return _pokemon_from_row(row)
+
+    def release_pokemon(
+        self, pokemon_id: str, *, expected_owner_player_id: str
+    ) -> PokemonRecord:
+        """Permanently release one owned Pokemon and its dependent world data.
+
+        Battle rosters are durable JSON snapshots, but a live battle must not
+        lose a creature underneath it. Finished battle records remain intact;
+        their historical turn text carries the released Pokemon's ID as plain
+        audit data rather than a foreign key.
+        """
+
+        pokemon_id = _identifier(pokemon_id, "pokemon_id")
+        owner = _identifier(expected_owner_player_id, "expected_owner_player_id")
+        with self._transaction():
+            row = self.connection.execute(
+                "SELECT * FROM pokemon WHERE pokemon_id = ?", (pokemon_id,)
+            ).fetchone()
+            if row is None:
+                raise NotFoundError(f"Pokemon {pokemon_id!r} was not found.")
+            if row["owner_player_id"] != owner:
+                raise OwnershipError("Pokemon does not belong to the expected player.")
+            self._require_no_open_battle_in_transaction(owner)
+            # A released creature should no longer appear in the Habitat's
+            # current story. Its world state cascades from the final delete;
+            # these two references deliberately use RESTRICT for normal data
+            # integrity, so release explicitly retires their old rows first.
+            self.connection.execute(
+                "UPDATE simulation_events SET target_pokemon_id = NULL WHERE target_pokemon_id = ?",
+                (pokemon_id,),
+            )
+            self.connection.execute(
+                "DELETE FROM simulation_events WHERE actor_pokemon_id = ?", (pokemon_id,)
+            )
+            self.connection.execute(
+                "DELETE FROM pokemon_transfers WHERE pokemon_id = ?", (pokemon_id,)
+            )
+            deleted = self.connection.execute(
+                "DELETE FROM pokemon WHERE pokemon_id = ? AND owner_player_id = ?",
+                (pokemon_id, owner),
+            )
+            if deleted.rowcount != 1:
+                raise OwnershipError("Pokemon owner changed before release was applied.")
+        return _pokemon_from_row(row)
+
     def transfer_pokemon(
         self,
         pokemon_id: str,

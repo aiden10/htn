@@ -471,6 +471,7 @@ class Button(str, Enum):
     RIGHT = "right"
     A = "a"
     B = "b"
+    START = "start"
     HOME = "home"
 
     @classmethod
@@ -493,6 +494,7 @@ class Button(str, Enum):
             "back": cls.B,
             "cancel": cls.B,
             "menu": cls.HOME,
+            "start_button": cls.START,
         }
         if normalized in aliases:
             return aliases[normalized]
@@ -638,14 +640,18 @@ class BadgeApp(ABC):
 
 @dataclass(frozen=True, slots=True)
 class Theme:
-    background: str = "#08111F"
-    surface: str = "#12243A"
-    surface_alt: str = "#17314A"
-    focus: str = "#F8C94A"
-    focus_text: str = "#101827"
-    text: str = "#F6F7FB"
-    muted: str = "#A5BACD"
-    accent: str = "#55D6BE"
+    background: str = "#241F1B"
+    surface: str = "#39302A"
+    surface_alt: str = "#4A3E35"
+    # Warm parchment is the primary selection colour; mint remains a quieter
+    # accent for active/player-owned UI rather than covering whole cards.
+    focus: str = "#DECBB5"
+    focus_text: str = "#241F1B"
+    text: str = "#FFF8F0"
+    muted: str = "#C7B7A7"
+    accent: str = "#B3E3A7"
+    # Orange is reserved for model/Director activity and rationale.
+    director: str = "#F78563"
     danger: str = "#F2817A"
 
 
@@ -725,9 +731,9 @@ class HomeApp(BadgeApp):
         )
         for index, destination in enumerate(self._destinations):
             selected = index == focus
-            fill = theme.focus if selected else theme.surface
+            fill = theme.accent if selected else theme.surface
             title_color = theme.focus_text if selected else theme.text
-            sub_color = "#504319" if selected else theme.muted
+            sub_color = "#284030" if selected else theme.muted
             title, subtitle = labels.get(destination, (destination.upper(), ""))
             operations.extend(
                 (
@@ -753,19 +759,52 @@ class DexApp(BadgeApp):
         self._columns = columns
 
     def initial_state(self, context: BadgeUiContext) -> JsonObject:
-        return {"selected": 0, "detail_tab": 0}
+        return {
+            "selected": 0,
+            "detail_tab": 0,
+            "release_confirm": False,
+            "release_notice": "",
+        }
 
     def reduce(self, state: JsonObject, event: ButtonEvent, context: BadgeUiContext) -> AppUpdate:
         count = len(context.pokemon)
         selected = _clamp(_int(state.get("selected")), 0, max(0, count - 1))
         detail_tab = _clamp(_int(state.get("detail_tab")), 0, 1)
+        release_confirm = bool(state.get("release_confirm", False))
+        release_notice = state.get("release_notice") if isinstance(state.get("release_notice"), str) else ""
+        if release_confirm:
+            if event.button is Button.B:
+                release_confirm = False
+            # A is deliberately handled by ShutterdexRuntime so it can apply
+            # the owned, durable release operation. Other inputs stay locked.
+            return AppUpdate(
+                {
+                    "selected": selected,
+                    "detail_tab": detail_tab,
+                    "release_confirm": release_confirm,
+                    "release_notice": release_notice,
+                }
+            )
         if event.button in (Button.UP, Button.DOWN, Button.LEFT, Button.RIGHT):
             selected = _focus_after_button(selected, count, event.button, columns=self._columns)
         elif event.button is Button.A:
             detail_tab = 1 - detail_tab
+        elif event.button is Button.START and count:
+            release_confirm = True
+            release_notice = ""
         elif event.button is Button.B:
-            return AppUpdate({"selected": selected, "detail_tab": detail_tab}, navigate_to="home")
-        return AppUpdate({"selected": selected, "detail_tab": detail_tab})
+            return AppUpdate(
+                {"selected": selected, "detail_tab": detail_tab, "release_confirm": False, "release_notice": ""},
+                navigate_to="home",
+            )
+        return AppUpdate(
+            {
+                "selected": selected,
+                "detail_tab": detail_tab,
+                "release_confirm": release_confirm,
+                "release_notice": release_notice,
+            }
+        )
 
     def render(self, state: JsonObject, context: BadgeUiContext) -> Screen:
         theme = self._theme
@@ -775,6 +814,10 @@ class DexApp(BadgeApp):
             Leds((theme.accent, theme.accent, theme.focus), brightness=35),
             Text(10, 10, "SHUTTERDEX", theme.text, size=23),
             Text(10, 33, f"{len(pokemon)} CAPTURE{'S' if len(pokemon) != 1 else ''}", theme.muted, size=11),
+            # Keep this control outside both large panels. The former
+            # bottom-right placement sat inside the detail panel and could be
+            # covered by its later draw operations on the badge.
+            Text(context.width - 142, 33, "START RELEASE", theme.accent, size=10, max_width=132, align="right"),
             Rect(8, 48, 150, context.height - 56, theme.surface, radius=8),
             Rect(164, 48, context.width - 172, context.height - 56, theme.surface, radius=8),
         ]
@@ -789,6 +832,8 @@ class DexApp(BadgeApp):
 
         selected = _clamp(_int(state.get("selected")), 0, len(pokemon) - 1)
         detail_tab = _clamp(_int(state.get("detail_tab")), 0, 1)
+        release_confirm = bool(state.get("release_confirm", False))
+        release_notice = state.get("release_notice") if isinstance(state.get("release_notice"), str) else ""
         page = selected // self._page_size
         first = page * self._page_size
         visible = pokemon[first : first + self._page_size]
@@ -800,7 +845,7 @@ class DexApp(BadgeApp):
             y = 56 + row * 82
             absolute_index = first + local_index
             highlighted = absolute_index == selected
-            fill = theme.focus if highlighted else theme.surface_alt
+            fill = theme.accent if highlighted else theme.surface_alt
             text_color = theme.focus_text if highlighted else theme.text
             operations.append(Rect(x, y, cell_width, cell_height, fill, radius=7))
             if mon.sprite_url:
@@ -868,6 +913,19 @@ class DexApp(BadgeApp):
                     )
                 )
         operations.append(Text(14, context.height - 19, f"PAGE {page + 1}/{max(1, (len(pokemon) + self._page_size - 1) // self._page_size)}", theme.muted, size=10))
+        if release_confirm:
+            operations.extend(
+                (
+                    Rect(20, 69, context.width - 40, 106, theme.surface_alt, stroke=theme.accent, stroke_width=2, radius=12),
+                    Text(36, 85, "RELEASE THIS CREATURE?", theme.text, size=15, max_width=context.width - 72),
+                    Text(36, 111, mon.name, theme.accent, size=18, max_width=context.width - 72, scroll=True),
+                    Text(36, 143, "A RELEASE   B CANCEL", theme.muted, size=12, max_width=context.width - 72),
+                )
+            )
+        elif release_notice:
+            operations.append(
+                Text(10, 34, release_notice, theme.danger, size=10, max_width=context.width - 20, align="right", scroll=True)
+            )
         return Screen(tuple(operations), scene=self.app_id)
 
 
@@ -968,13 +1026,13 @@ class HabitatApp(BadgeApp):
         world_height = world_bottom - world_top
         operations: list[DrawOperation] = [
             Clear(theme.background),
-            Leds(("#5BC0EB", "#6BCB77", "#F8C94A"), brightness=34),
+            Leds((theme.accent, theme.focus, theme.accent), brightness=34),
             Text(10, 10, "HABITAT", theme.text, size=23),
             Text(
                 context.width - 105,
                 15,
                 "DIRECTING..." if busy else f"WORLD {context.world_revision}",
-                theme.focus if busy else theme.muted,
+                theme.director if busy else theme.muted,
                 size=10,
                 max_width=96,
                 align="right",
@@ -983,7 +1041,7 @@ class HabitatApp(BadgeApp):
                 10,
                 36,
                 "DIRECTING - CONTROLS LOCKED" if busy else "L/R CREATURE   U/D MOMENTS   A ADVANCE",
-                theme.focus if busy else theme.muted,
+                theme.director if busy else theme.muted,
                 size=9,
                 max_width=context.width - 20,
             ),
@@ -1006,7 +1064,7 @@ class HabitatApp(BadgeApp):
             y = _clamp(y, world_top + 4, world_bottom - 44)
             focused = index == selected
             if focused:
-                operations.append(Rect(x - 4, y - 4, 48, 48, "#0D1F2B", stroke=theme.focus, stroke_width=2, radius=10))
+                operations.append(Rect(x - 4, y - 4, 48, 48, "#0D1F2B", stroke=theme.accent, stroke_width=2, radius=10))
             if creature.sprite_url:
                 operations.append(Image(x, y, 40, 40, creature.sprite_url))
             else:
@@ -1030,7 +1088,7 @@ class HabitatApp(BadgeApp):
         elif busy and panel == "status":
             operations.extend(
                 (
-                    Text(17, panel_y + 7, "HABITAT DIRECTOR", theme.focus, size=11, max_width=context.width - 34),
+                    Text(17, panel_y + 7, "HABITAT DIRECTOR", theme.director, size=11, max_width=context.width - 34),
                     Text(17, panel_y + 25, "Working automatically. Controls unlock when done.", theme.text, size=12, max_width=context.width - 34, scroll=True),
                 )
             )
@@ -1357,7 +1415,7 @@ class BattleApp(BadgeApp):
         for index, opponent in enumerate(opponents[:4]):
             selected = index == focus
             y = 89 + index * 27
-            fill = theme.focus if selected else theme.surface
+            fill = theme.accent if selected else theme.surface
             colour = theme.focus_text if selected else theme.text
             marker = "> " if selected else "  "
             operations.extend(
@@ -1432,7 +1490,7 @@ class BattleApp(BadgeApp):
         viewer_turn = self._can_choose_move(battle)
         if resolving:
             status = "DIRECTOR RESOLVING - CONTROLS LOCKED"
-            status_color = theme.focus
+            status_color = theme.director
         elif viewer_turn:
             status = "YOUR TURN - CHOOSE A MOVE"
             status_color = theme.accent
@@ -1442,7 +1500,7 @@ class BattleApp(BadgeApp):
         operations: list[DrawOperation] = [
             Clear(theme.background),
             Leds(
-                (theme.focus, theme.focus, theme.focus) if resolving else (theme.accent, theme.focus, theme.accent),
+                (theme.director, theme.director, theme.director) if resolving else (theme.accent, theme.focus, theme.accent),
                 brightness=38,
             ),
             Text(10, 8, "BATTLE", theme.text, size=21),
@@ -1470,10 +1528,11 @@ class BattleApp(BadgeApp):
 
         narrative = battle.rationale or battle.last_action or battle.notice
         narrative_heading = "DIRECTOR RATIONALE" if battle.rationale else "BATTLE UPDATE"
+        narrative_colour = theme.director if battle.rationale else theme.focus
         operations.extend(
             (
                 Rect(8, 124, context.width - 16, 39, theme.surface, radius=8),
-                Text(17, 129, narrative_heading, theme.focus, size=9, max_width=context.width - 34),
+                Text(17, 129, narrative_heading, narrative_colour, size=9, max_width=context.width - 34),
                 Text(
                     17,
                     143,
@@ -1608,7 +1667,7 @@ class BattleApp(BadgeApp):
             column, row = index % 2, index // 2
             x, y = 8 + column * (cell_width + 8), 178 + row * 28
             selected = enabled and index == move_index
-            fill = theme.focus if selected else theme.surface_alt
+            fill = theme.accent if selected else theme.surface_alt
             text_colour = theme.focus_text if selected else (theme.text if enabled else theme.muted)
             operations.extend(
                 (
