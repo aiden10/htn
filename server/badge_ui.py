@@ -674,35 +674,95 @@ class HabitatApp(BadgeApp):
         self._theme = theme
 
     def initial_state(self, context: BadgeUiContext) -> JsonObject:
-        return {"selected": 0, "event_index": 0}
+        return {
+            "selected": 0,
+            "event_index": max(0, len(context.events) - 1),
+            "panel": "event",
+            "busy": False,
+            "notice": "",
+        }
 
     def reduce(self, state: JsonObject, event: ButtonEvent, context: BadgeUiContext) -> AppUpdate:
         creatures = self._creatures(context)
         selected = _clamp(_int(state.get("selected")), 0, max(0, len(creatures) - 1))
         event_index = _clamp(_int(state.get("event_index")), 0, max(0, len(context.events) - 1))
-        if event.button in (Button.UP, Button.LEFT):
+        panel = (
+            state.get("panel")
+            if state.get("panel") in {"creature", "event", "status"}
+            else "event"
+        )
+        busy = bool(state.get("busy", False))
+        notice = state.get("notice") if isinstance(state.get("notice"), str) else ""
+        if event.button is Button.LEFT:
             selected = _focus_after_button(selected, len(creatures), Button.LEFT)
-        elif event.button in (Button.DOWN, Button.RIGHT):
+            panel, notice = "creature", ""
+        elif event.button is Button.RIGHT:
             selected = _focus_after_button(selected, len(creatures), Button.RIGHT)
-        # The runtime owns the side effect for A: it obtains a required Jev
-        # decision and refreshes this context before this reducer renders.
-        # Up/down/left/right still select a creature; B returns home.
+            panel, notice = "creature", ""
+        elif event.button is Button.UP and context.events:
+            event_index = _focus_after_button(event_index, len(context.events), Button.UP)
+            panel, notice = "event", ""
+        elif event.button is Button.DOWN and context.events:
+            event_index = _focus_after_button(event_index, len(context.events), Button.DOWN)
+            panel, notice = "event", ""
+        # The runtime owns A's asynchronous side effect. It sets ``busy``
+        # before requesting the writer and Jev so the badge responds instantly.
         elif event.button is Button.B:
-            return AppUpdate({"selected": selected, "event_index": event_index}, navigate_to="home")
-        return AppUpdate({"selected": selected, "event_index": event_index})
+            return AppUpdate(
+                {
+                    "selected": selected,
+                    "event_index": event_index,
+                    "panel": panel,
+                    "busy": busy,
+                    "notice": notice,
+                },
+                navigate_to="home",
+            )
+        return AppUpdate(
+            {
+                "selected": selected,
+                "event_index": event_index,
+                "panel": panel,
+                "busy": busy,
+                "notice": notice,
+            }
+        )
 
     def render(self, state: JsonObject, context: BadgeUiContext) -> Screen:
         theme = self._theme
         creatures = self._creatures(context)
         selected = _clamp(_int(state.get("selected")), 0, max(0, len(creatures) - 1))
         event_index = _clamp(_int(state.get("event_index")), 0, max(0, len(context.events) - 1))
-        world_top, world_bottom = 43, context.height - 66
+        panel = (
+            state.get("panel")
+            if state.get("panel") in {"creature", "event", "status"}
+            else "event"
+        )
+        busy = bool(state.get("busy", False))
+        notice = state.get("notice") if isinstance(state.get("notice"), str) else ""
+        world_top, world_bottom = 50, context.height - 66
         world_height = world_bottom - world_top
         operations: list[DrawOperation] = [
             Clear(theme.background),
             Leds(("#5BC0EB", "#6BCB77", "#F8C94A"), brightness=34),
             Text(10, 10, "HABITAT", theme.text, size=23),
-            Text(context.width - 105, 15, f"WORLD {context.world_revision}", theme.muted, size=10, max_width=96, align="right"),
+            Text(
+                context.width - 105,
+                15,
+                "DIRECTING..." if busy else f"WORLD {context.world_revision}",
+                theme.focus if busy else theme.muted,
+                size=10,
+                max_width=96,
+                align="right",
+            ),
+            Text(
+                10,
+                36,
+                "DIRECTING - CONTROLS LOCKED" if busy else "L/R CREATURE   U/D MOMENTS   A ADVANCE",
+                theme.focus if busy else theme.muted,
+                size=9,
+                max_width=context.width - 20,
+            ),
             Rect(8, world_top, context.width - 16, world_height, "#245B67", radius=8),
             Rect(12, world_top + world_height // 2, context.width - 24, world_height // 2 - 4, "#397B56", radius=6),
             Rect(20, world_top + 19, 52, 11, "#7EC8E3", radius=6),
@@ -733,9 +793,35 @@ class HabitatApp(BadgeApp):
 
         panel_y = context.height - 58
         operations.append(Rect(8, panel_y, context.width - 16, 50, theme.surface, radius=8))
-        if context.events:
+        if notice:
+            operations.extend(
+                (
+                    Text(17, panel_y + 7, "HABITAT NOTICE", theme.danger, size=11, max_width=context.width - 34),
+                    Text(17, panel_y + 25, notice, theme.text, size=12, max_width=context.width - 34, scroll=True),
+                )
+            )
+        elif busy and panel == "status":
+            operations.extend(
+                (
+                    Text(17, panel_y + 7, "HABITAT DIRECTOR", theme.focus, size=11, max_width=context.width - 34),
+                    Text(17, panel_y + 25, "Working automatically. Controls unlock when done.", theme.text, size=12, max_width=context.width - 34, scroll=True),
+                )
+            )
+        elif panel == "creature" and creatures:
+            creature = creatures[selected]
+            operations.extend(
+                (
+                    Text(17, panel_y + 7, f"{creature.name}  {creature.mood.upper()}", theme.focus, size=11, max_width=context.width - 34, scroll=True),
+                    Text(17, panel_y + 25, creature.activity, theme.text, size=12, max_width=context.width - 34, scroll=True),
+                )
+            )
+        elif context.events:
             event = context.events[event_index]
-            heading = event.actor_name or "WORLD MOMENT"
+            heading = (
+                f"LATEST MOMENT  {event.actor_name or 'WORLD'}"
+                if event_index == len(context.events) - 1
+                else f"MOMENT {event_index + 1}/{len(context.events)}  {event.actor_name or 'WORLD'}"
+            )
             body = event.dialogue or event.summary
             operations.extend(
                 (

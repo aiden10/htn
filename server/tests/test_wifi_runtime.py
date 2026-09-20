@@ -259,6 +259,33 @@ class WifiRuntimeTests(unittest.IsolatedAsyncioTestCase):
         badge = await self.runtime.pair_badge(
             player_id=player.player_id, htn_id="a1b2c", app_key="key-a"
         )
+        self.store.create_pokemon(
+            _pokemon(
+                pokemon_id="mon_aster",
+                owner_player_id=player.player_id,
+                captured_by_badge_id=badge.badge_id,
+                name="Aster",
+                element="electric",
+            )
+        )
+        self.store.create_pokemon(
+            _pokemon(
+                pokemon_id="mon_bramble",
+                owner_player_id=player.player_id,
+                captured_by_badge_id=badge.badge_id,
+                name="Bramble",
+                element="earth",
+            )
+        )
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def delayed_advance(player_id: str) -> None:
+            self.habitat_advance_calls.append(player_id)
+            started.set()
+            await release.wait()
+
+        self.runtime._on_habitat_advance = delayed_advance
         await self.runtime.launch(badge.htn_id)
         await self.runtime.handle_button(badge.htn_id, "down")
         await self.runtime.handle_button(badge.htn_id, "a")
@@ -267,9 +294,42 @@ class WifiRuntimeTests(unittest.IsolatedAsyncioTestCase):
         assert session is not None
         self.assertEqual(session.active_app, "habitat")
 
-        await self.runtime.handle_button(badge.htn_id, "a")
-        await self.runtime.handle_button(badge.htn_id, "a", repeat=True)
+        await self.runtime.handle_button(badge.htn_id, "right")
+        selected = self.store.get_session(badge.badge_id)
+        assert selected is not None
+        self.assertEqual(selected.app_state["habitat"]["selected"], 1)
+        self.assertEqual(selected.app_state["habitat"]["panel"], "creature")
+
+        pending = await self.runtime.handle_button(badge.htn_id, "a")
+        self.assertGreater(pending.queued_commands, 0)
+        session = self.store.get_session(badge.badge_id)
+        assert session is not None
+        self.assertTrue(session.app_state["habitat"]["busy"])
+        await started.wait()
+
+        # The Director turn is automatic. Every in-app control is a true
+        # no-op until it completes: no duplicate transaction, navigation, or
+        # redundant frame.
+        self.assertIsNone(await self.runtime.handle_button(badge.htn_id, "a"))
+        self.assertIsNone(await self.runtime.handle_button(badge.htn_id, "a", repeat=True))
+        self.assertIsNone(await self.runtime.handle_button(badge.htn_id, "left"))
+        self.assertIsNone(await self.runtime.handle_button(badge.htn_id, "right"))
+        self.assertIsNone(await self.runtime.handle_button(badge.htn_id, "up"))
+        self.assertIsNone(await self.runtime.handle_button(badge.htn_id, "down"))
+        self.assertIsNone(await self.runtime.handle_button(badge.htn_id, "b"))
         self.assertEqual(self.habitat_advance_calls, [player.player_id])
+        locked = self.store.get_session(badge.badge_id)
+        assert locked is not None
+        self.assertEqual(locked.active_app, "habitat")
+        self.assertEqual(locked.app_state["habitat"]["selected"], 1)
+
+        release.set()
+        await self._wait_until(
+            lambda: (
+                (saved := self.store.get_session(badge.badge_id)) is not None
+                and saved.app_state["habitat"]["busy"] is False
+            )
+        )
 
 
 if __name__ == "__main__":

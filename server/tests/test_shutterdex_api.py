@@ -55,7 +55,7 @@ class MemoryVault:
 
 
 class FakeBackboardClient:
-    """A deterministic local Jev answer; no network request leaves the test."""
+    """A deterministic local writer + Jev pair; no network request leaves the test."""
 
     def __init__(self, *, api_key: str) -> None:
         self.api_key = api_key
@@ -67,11 +67,48 @@ class FakeBackboardClient:
         return False
 
     async def send_message(self, message: str, **kwargs: object) -> object:
-        return type(
-            "FakeBackboardResponse",
-            (),
-            {"system_one": {"answers": {"next_interaction": {"choice": "play"}}}},
-        )()
+        if kwargs.get("model_name") == "gpt-4.1-nano":
+            actor = json.loads(message)["actor"]["name"]
+            return type(
+                "FakeBackboardResponse",
+                (),
+                {
+                    "content": json.dumps(
+                        {
+                            "events": [
+                                {
+                                    "kind": "observe",
+                                    "summary": f"{actor} checks the warm stones.",
+                                    "dialogue": [
+                                        {"speaker": "actor", "text": "These stones remember sunlight."}
+                                    ],
+                                },
+                                {
+                                    "kind": "greet",
+                                    "summary": f"{actor} practises a new greeting.",
+                                    "dialogue": [
+                                        {"speaker": "actor", "text": "Hello, Habitat. I am ready."}
+                                    ],
+                                },
+                                {
+                                    "kind": "play",
+                                    "summary": f"{actor} sends a leaf skimming across water.",
+                                    "dialogue": [
+                                        {"speaker": "actor", "text": "That one almost skipped twice."}
+                                    ],
+                                },
+                            ]
+                        }
+                    )
+                },
+            )()
+        if kwargs.get("model_name") == "jev-latest":
+            return type(
+                "FakeBackboardResponse",
+                (),
+                {"system_one": {"answers": {"next_event": {"choice": "option_3"}}}},
+            )()
+        raise AssertionError(f"Unexpected Backboard test model: {kwargs.get('model_name')!r}")
 
 
 class ShutterdexApiTests(unittest.IsolatedAsyncioTestCase):
@@ -215,6 +252,11 @@ class ShutterdexApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(simulation["director_used"], "jev")
         self.assertEqual(simulation["player_id"], player_id)
         self.assertEqual(simulation["event"]["actor_pokemon_id"], "mon_sprocket")
+        self.assertEqual(
+            simulation["event"]["summary"],
+            "Sprocket sends a leaf skimming across water.",
+        )
+        self.assertEqual(simulation["event"]["kind"], "play")
         self.assertEqual(len(simulation["world_states"]), 1)
         self.assert_secret_absent(secret, tick)
 

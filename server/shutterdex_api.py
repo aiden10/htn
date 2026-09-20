@@ -34,6 +34,7 @@ from htn_gateway import GatewayError
 from models import Pokemon
 from player_simulation import (
     EmptyHabitatError,
+    HabitatWriterUnavailableError,
     JevUnavailableError,
     PlayerSimulationError,
     PlayerSimulationService,
@@ -146,7 +147,7 @@ def _http_error(exc: Exception) -> HTTPException:
         return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
     if isinstance(exc, (ConflictError, OwnershipError)):
         return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
-    if isinstance(exc, JevUnavailableError):
+    if isinstance(exc, (HabitatWriterUnavailableError, JevUnavailableError)):
         return HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(exc),
