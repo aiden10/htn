@@ -1,20 +1,35 @@
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Mapping
 from contextlib import asynccontextmanager
+from hashlib import sha256
+import json
+import logging
 import os
 from pathlib import Path
 from uuid import uuid4
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile, status
 from fastapi.responses import FileResponse, PlainTextResponse
+from dotenv import load_dotenv
 
 from badge_export import badge_snapshot_text
+from badge_renderer import ScreenRenderer, SpriteImageResolver
+from badge_store import BadgeStore
+from badge_ui import BadgeUi
+from credential_vault import CredentialError, FernetCredentialVault, UnavailableCredentialVault
+from htn_gateway import HTNBadgeGateway, HTNServiceWebSocketTransport, InMemoryBadgeTransport
 from models import Pokemon, SimulationTickRequest, SimulationTickResult, WorldSnapshot
+from player_simulation import PlayerSimulationService
+from shutterdex_api import router as shutterdex_router
+from shutterdex_runtime import ShutterdexRuntime
 from simulation import SimulationService, WorldStore
 from sprite_assets import SpriteError, SpriteStore
 
 
 SERVER_DIR = Path(__file__).resolve().parent
+load_dotenv(SERVER_DIR / ".env")
 DATA_DIR = SERVER_DIR / "data"
 UPLOAD_DIR = SERVER_DIR / "uploads"
 SPRITE_DIR = DATA_DIR / "sprites"
@@ -26,10 +41,138 @@ ALLOWED_IMAGE_TYPES = {
     "image/webp": ".webp",
 }
 
+LOGGER = logging.getLogger(__name__)
+
+
+def make_badge_gateway() -> HTNBadgeGateway:
+    """Choose the Wi-Fi badge transport without changing legacy USB paths.
+
+    The HTN app WebSocket is the normal runtime. Set
+    ``SHUTTERDEX_BADGE_TRANSPORT=memory`` for local dashboard/UI testing with
+    no physical badge. The firmware's device token is never read by this
+    server.
+    """
+
+    mode = os.getenv("SHUTTERDEX_BADGE_TRANSPORT", "htn").strip().lower()
+    if mode in {"memory", "local", "test"}:
+        transport = InMemoryBadgeTransport()
+    elif mode in {"htn", "wifi", "websocket"}:
+        transport = HTNServiceWebSocketTransport()
+    else:
+        raise RuntimeError(
+            "SHUTTERDEX_BADGE_TRANSPORT must be 'memory' or 'htn'."
+        )
+    return HTNBadgeGateway(transport)
+
+
+def make_credential_vault() -> FernetCredentialVault | UnavailableCredentialVault:
+    """Avoid storing a Wi-Fi app key until deployment encryption is configured."""
+
+    try:
+        return FernetCredentialVault.from_environment()
+    except CredentialError as exc:
+        LOGGER.warning("Wi-Fi badge pairing is disabled: %s", exc)
+        return UnavailableCredentialVault()
+
+
+def configured_badges() -> tuple[tuple[str, str], ...]:
+    """Read per-badge HTN IDs and app keys from ``SHUTTERDEX_BADGES``.
+
+    The on-device key is normally different for every badge. JSON avoids a
+    fragile separator format because app keys may contain any printable
+    character. A deliberately shared key may simply be repeated in entries.
+    """
+
+    raw = os.getenv("SHUTTERDEX_BADGES", "").strip()
+    if not raw:
+        return ()
+    try:
+        entries = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("SHUTTERDEX_BADGES must be a JSON list.") from exc
+    if not isinstance(entries, list) or not entries:
+        raise RuntimeError("SHUTTERDEX_BADGES must be a non-empty JSON list.")
+
+    configured: list[tuple[str, str]] = []
+    seen_ids: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            raise RuntimeError("Each SHUTTERDEX_BADGES entry must be an object.")
+        htn_id = entry.get("htn_id")
+        app_key = entry.get("app_key")
+        if not isinstance(htn_id, str) or not htn_id.strip():
+            raise RuntimeError("Each configured badge needs a non-empty htn_id.")
+        if not isinstance(app_key, str) or not app_key:
+            raise RuntimeError("Each configured badge needs an app_key.")
+        htn_id = htn_id.strip()
+        if htn_id in seen_ids:
+            raise RuntimeError("SHUTTERDEX_BADGES cannot contain duplicate HTN-IDs.")
+        seen_ids.add(htn_id)
+        configured.append((htn_id, app_key))
+    return tuple(configured)
+
+
+def configured_player_id(htn_id: str) -> str:
+    """Return a stable player ID without assuming an HTN-ID format."""
+
+    digest = sha256(htn_id.encode("utf-8")).hexdigest()[:20]
+    return f"configured_{digest}"
+
+
+async def start_configured_badges(app: FastAPI) -> None:
+    """Create, pair, connect, and launch every badge declared in ``.env``."""
+
+    badges = configured_badges()
+    if not badges:
+        return
+
+    for htn_id, app_key in badges:
+        player_id = configured_player_id(htn_id)
+        if app.state.shutterdex_store.get_player(player_id) is None:
+            app.state.shutterdex_store.create_player(
+                f"Badge {htn_id}", player_id=player_id
+            )
+        try:
+            await app.state.shutterdex_runtime.pair_badge(
+                player_id=player_id,
+                htn_id=htn_id,
+                app_key=app_key,
+            )
+            await app.state.shutterdex_runtime.reset_to_home(htn_id)
+            await app.state.shutterdex_runtime.launch(htn_id)
+            LOGGER.info("Configured Shutterdex badge %s is connected.", htn_id)
+        except GatewayError as exc:
+            # Pairing is persisted before connection. A later server restart
+            # or retry can use the saved credential without re-entry.
+            LOGGER.warning(
+                "Configured Shutterdex badge %s is stored but currently offline: %s",
+                htn_id,
+                exc,
+            )
+            app.state.configured_badge_retry_tasks.append(
+                asyncio.create_task(
+                    retry_configured_badge(app, htn_id),
+                    name=f"shutterdex-configured-badge-{htn_id}",
+                )
+            )
+
+
+async def retry_configured_badge(app: FastAPI, htn_id: str) -> None:
+    """Retry an offline configured badge without needing a dashboard action."""
+
+    while True:
+        await asyncio.sleep(10)
+        try:
+            await app.state.shutterdex_runtime.launch(htn_id)
+        except GatewayError:
+            continue
+        LOGGER.info("Configured Shutterdex badge %s reconnected.", htn_id)
+        return
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Set up the persistent world and optional local badge-mirror publisher."""
+    """Set up legacy serial services and the isolated HTN OS app runtime."""
 
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     mirror_setting = os.getenv("BADGE_INBOX_DIR", "").strip()
@@ -45,22 +188,48 @@ async def lifespan(app: FastAPI):
         backboard_api_key=os.getenv("BACKBOARD_API_KEY"),
     )
     app.state.sprites = SpriteStore(SPRITE_DIR)
+    app.state.shutterdex_store = BadgeStore(DATA_DIR / "shutterdex.sqlite3")
+    app.state.shutterdex_gateway = make_badge_gateway()
+    app.state.player_simulation = PlayerSimulationService(
+        app.state.shutterdex_store,
+        backboard_api_key=os.getenv("BACKBOARD_API_KEY"),
+    )
+    app.state.shutterdex_runtime = ShutterdexRuntime(
+        store=app.state.shutterdex_store,
+        gateway=app.state.shutterdex_gateway,
+        vault=make_credential_vault(),
+        ui=BadgeUi.standard(),
+        renderer=ScreenRenderer(SpriteImageResolver(app.state.sprites)),
+        sprites=app.state.sprites,
+        on_habitat_advance=app.state.player_simulation.tick,
+    )
+    app.state.configured_badge_retry_tasks = []
+    await app.state.shutterdex_runtime.start()
+    await start_configured_badges(app)
     try:
         yield
     finally:
+        for task in app.state.configured_badge_retry_tasks:
+            task.cancel()
+        await asyncio.gather(
+            *app.state.configured_badge_retry_tasks, return_exceptions=True
+        )
+        await app.state.shutterdex_runtime.close()
+        app.state.shutterdex_store.close()
         app.state.simulation.store.close()
         app.state.test_simulation.store.close()
 
 
 app = FastAPI(
-    title="Pokemon Generator and Simulation Server",
+    title="Shutterdex Pokemon Generator and Simulation Server",
     description=(
         "Receives Poké Ball images, maintains the authoritative Pokemon world, "
         "and exports complete badge snapshots."
     ),
-    version="0.2.0",
+    version="0.3.0",
     lifespan=lifespan,
 )
+app.include_router(shutterdex_router)
 
 
 def simulation_service(request: Request) -> SimulationService:

@@ -62,6 +62,13 @@ class SpriteStore:
             raise SpriteError("Invalid sprite key.")
         return self.badge_dir / f"{sprite_key}.bin"
 
+    def source_path(self, sprite_key: str) -> Path:
+        """Return the validated PNG source used by the HTN OS renderer."""
+
+        if not _KEY_RE.fullmatch(sprite_key):
+            raise SpriteError("Invalid sprite key.")
+        return self.source_dir / f"{sprite_key}.png"
+
     def save_png(self, pokemon_id: str, image_bytes: bytes) -> str:
         """Validate a PNG/WebP/JPEG image and generate its badge-ready copy."""
 
