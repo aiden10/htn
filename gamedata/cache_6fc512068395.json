@@ -1,0 +1,30 @@
+{
+  "species": "rubber_duck",
+  "species_key": "rubber_duck",
+  "name": "Quackool",
+  "type": "tide",
+  "stats": {
+    "hp": 110,
+    "attack": 75,
+    "defense": 125,
+    "speed": 90
+  },
+  "moves": [
+    "drizzle_jab",
+    "undertow",
+    "rinse",
+    "heat_haze"
+  ],
+  "flavour": "Too cool to sink, it floats effortlessly through turbulent waters without flinching.",
+  "rarity": "uncommon",
+  "sprite_prompt": "Plump buoyant avian body of vibrant canary yellow, small rounded wing nubs, sleek dark visor band wrapped across the head, smooth seamless glossy texture.",
+  "first_seen": "2026-09-19T09:51:23",
+  "sightings": 4,
+  "photo_hash": "6fc512068395",
+  "sprite": "rubber_duck_2.png",
+  "timing": {
+    "vision_s": 11.35,
+    "image_s": 0.0,
+    "total_s": 11.35
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "species": "balloon_animal",
+  "species_key": "balloon_animal",
+  "name": "Inflatape",
+  "type": "circuit",
+  "stats": {
+    "hp": 70,
+    "attack": 85,
+    "defense": 85,
+    "speed": 160
+  },
+  "moves": [
+    "static_nip",
+    "overclock",
+    "arc_lash",
+    "short_circuit"
+  ],
+  "flavour": "Rubbing against carpets gives it enough static power to contact its mothership.",
+  "rarity": "uncommon",
+  "sprite_prompt": "Bulbous lime-green spherical head resting on tubular twisted metallic silver limbs, forming a slender bipedal body with elongated looped arms and small knot joints.",
+  "first_seen": "2026-09-19T09:51:05",
+  "sightings": 5,
+  "photo_hash": "285fc5d9adcc",
+  "sprite": "balloon_animal_2.png",
+  "timing": {
+    "vision_s": 8.82,
+    "image_s": 0.0,
+    "total_s": 8.82
+  }
+}

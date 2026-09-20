@@ -1,0 +1,30 @@
+{
+  "species": "balloon_animal",
+  "species_key": "balloon_animal",
+  "name": "Inflatape",
+  "type": "circuit",
+  "stats": {
+    "hp": 70,
+    "attack": 85,
+    "defense": 85,
+    "speed": 160
+  },
+  "moves": [
+    "static_nip",
+    "overclock",
+    "arc_lash",
+    "short_circuit"
+  ],
+  "flavour": "It transmits interstellar distress signals purely through friction squeaks and static shocks.",
+  "rarity": "uncommon",
+  "sprite_prompt": "Bulbous lime-green spherical head atop a slender body of twisted metallic silver tubular limbs, with elongated flexible appendages and shiny rubbery skin.",
+  "first_seen": "2026-09-19T09:51:05",
+  "sightings": 3,
+  "photo_hash": "cf9b35a73ab9",
+  "sprite": "balloon_animal_2.png",
+  "timing": {
+    "vision_s": 9.98,
+    "image_s": 3.74,
+    "total_s": 13.88
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "species": "die",
+  "species_key": "die",
+  "name": "Polyhedroll",
+  "type": "stone",
+  "stats": {
+    "hp": 95,
+    "attack": 85,
+    "defense": 130,
+    "speed": 90
+  },
+  "moves": [
+    "pebble_toss",
+    "grind_down",
+    "boulder_drop",
+    "bedrock_stance"
+  ],
+  "flavour": "Every battle is a gamble when its landing face decides its mood.",
+  "rarity": "uncommon",
+  "sprite_prompt": "Geometric twenty-sided obsidian body etched with glowing green numerals, four stubby crystalline legs, and three small faceted stone fragments orbiting above its crown.",
+  "first_seen": "2026-09-19T21:16:08",
+  "sightings": 2,
+  "photo_hash": "5d8c0dc203cf",
+  "sprite": "die_1.png",
+  "timing": {
+    "vision_s": 9.96,
+    "image_s": 4.4,
+    "total_s": 14.43
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "species": "water_bottle",
+  "species_key": "water_bottle",
+  "name": "Flaskle",
+  "type": "tide",
+  "stats": {
+    "hp": 110,
+    "attack": 65,
+    "defense": 145,
+    "speed": 80
+  },
+  "moves": [
+    "drizzle_jab",
+    "rinse",
+    "tidal_slam",
+    "bedrock_stance"
+  ],
+  "flavour": "It stays icy cool under pressure, but perpetually forgets to hydrate itself.",
+  "rarity": "common",
+  "sprite_prompt": "A smooth cylindrical powder-blue body with a matte metal finish, stubby rubber suction feet, and a looped screw-cap handle protruding from its domed head.",
+  "first_seen": "2026-09-19T09:51:33",
+  "sightings": 5,
+  "photo_hash": "0d325e065af9",
+  "sprite": "water_bottle_0.png",
+  "timing": {
+    "vision_s": 6.93,
+    "image_s": 0.0,
+    "total_s": 6.93
+  }
+}

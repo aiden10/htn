@@ -1,0 +1,30 @@
+{
+  "species": "balloon_animal",
+  "species_key": "balloon_animal",
+  "name": "Inflatape",
+  "type": "circuit",
+  "stats": {
+    "hp": 70,
+    "attack": 85,
+    "defense": 85,
+    "speed": 160
+  },
+  "moves": [
+    "static_nip",
+    "overclock",
+    "arc_lash",
+    "short_circuit"
+  ],
+  "flavour": "It communicates across galaxies entirely through squeaky static vibrations.",
+  "rarity": "uncommon",
+  "sprite_prompt": "Bulbous lime green inflatable dome perched atop silver twisted tubular segments, with elongated metallic balloon limbs ending in knotted rubbery joints and smooth glossy textures.",
+  "first_seen": "2026-09-19T09:51:05",
+  "sightings": 4,
+  "photo_hash": "dda335d9361c",
+  "sprite": "balloon_animal_0.png",
+  "timing": {
+    "vision_s": 10.43,
+    "image_s": 0.0,
+    "total_s": 10.43
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "species": "rubber_duck",
+  "species_key": "rubber_duck",
+  "name": "Shaduck",
+  "type": "tide",
+  "stats": {
+    "hp": 110,
+    "attack": 75,
+    "defense": 115,
+    "speed": 100
+  },
+  "moves": [
+    "drizzle_jab",
+    "undertow",
+    "tidal_slam",
+    "rinse"
+  ],
+  "flavour": "Too cool to sink, it floats effortlessly through turbulent ocean whirlpools.",
+  "rarity": "uncommon",
+  "sprite_prompt": "Plump yellow waterfowl torso, stubby rounded wings, sleek black sunglasses resting across its brow, smooth buoyant skin, tiny upturned tail feather.",
+  "first_seen": "2026-09-19T21:14:39",
+  "sightings": 2,
+  "photo_hash": "87ea2348d5de",
+  "sprite": "rubber_duck_1.png",
+  "timing": {
+    "vision_s": 6.36,
+    "image_s": 3.73,
+    "total_s": 10.17
+  }
+}

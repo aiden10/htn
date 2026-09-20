@@ -1,0 +1,30 @@
+{
+  "species": "balloon_animal",
+  "species_key": "balloon_animal",
+  "name": "Babloon",
+  "type": "circuit",
+  "stats": {
+    "hp": 60,
+    "attack": 60,
+    "defense": 100,
+    "speed": 180
+  },
+  "moves": [
+    "static_nip",
+    "arc_lash",
+    "overclock",
+    "heat_haze"
+  ],
+  "flavour": "Rubbing against carpets charges its body to transmit static messages across galaxies.",
+  "rarity": "uncommon",
+  "sprite_prompt": "A bulbous bright lime-green spherical head atop a slender tubular metallic-silver torso, with elongated looped tubular silver arms and legs formed of inflated shiny rubbery segments.",
+  "first_seen": "2026-09-19T21:14:27",
+  "sightings": 2,
+  "photo_hash": "4868f76f9468",
+  "sprite": "balloon_animal_1.png",
+  "timing": {
+    "vision_s": 7.74,
+    "image_s": 4.03,
+    "total_s": 11.86
+  }
+}

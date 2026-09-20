@@ -1,0 +1,30 @@
+{
+  "species": "die",
+  "species_key": "die",
+  "name": "Polyhedroll",
+  "type": "stone",
+  "stats": {
+    "hp": 95,
+    "attack": 85,
+    "defense": 130,
+    "speed": 90
+  },
+  "moves": [
+    "pebble_toss",
+    "grind_down",
+    "boulder_drop",
+    "bedrock_stance"
+  ],
+  "flavour": "Every decision it makes depends entirely on how it lands after tumbling.",
+  "rarity": "uncommon",
+  "sprite_prompt": "Twenty-sided charcoal-grey geometric body with luminous green numbers glowing on each facet, balanced upon four stout polygonal stone legs with sharp crystalline claws.",
+  "first_seen": "2026-09-19T21:16:08",
+  "sightings": 3,
+  "photo_hash": "4b72cfc5d2ef",
+  "sprite": "die_2.png",
+  "timing": {
+    "vision_s": 6.41,
+    "image_s": 4.94,
+    "total_s": 11.43
+  }
+}

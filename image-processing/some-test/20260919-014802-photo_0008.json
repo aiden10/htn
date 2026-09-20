@@ -1,0 +1,30 @@
+{
+  "species": "water_bottle",
+  "species_key": "water_bottle",
+  "name": "Gulpup",
+  "type": "tide",
+  "stats": {
+    "hp": 110,
+    "attack": 75,
+    "defense": 145,
+    "speed": 70
+  },
+  "moves": [
+    "rinse",
+    "tidal_slam",
+    "drizzle_jab",
+    "bedrock_stance"
+  ],
+  "flavour": "It stays icy cool under pressure, occasionally leaking cold water on unsuspecting desks.",
+  "rarity": "common",
+  "sprite_prompt": "Cylindrical sky-blue metallic body with a rubber loop handle on top, stubby flipper limbs, droplet markings, and a frost-coated silver base ring.",
+  "first_seen": "2026-09-19T21:18:28",
+  "sightings": 4,
+  "photo_hash": "901ed773b26d",
+  "sprite": "water_bottle_0.png",
+  "timing": {
+    "vision_s": 7.09,
+    "image_s": 0.0,
+    "total_s": 7.09
+  }
+}

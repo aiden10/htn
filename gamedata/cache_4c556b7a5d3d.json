@@ -1,0 +1,30 @@
+{
+  "species": "flying disc",
+  "species_key": "flying_disc",
+  "name": "Discovolt",
+  "type": "circuit",
+  "stats": {
+    "hp": 75,
+    "attack": 110,
+    "defense": 65,
+    "speed": 150
+  },
+  "moves": [
+    "static_nip",
+    "overclock",
+    "arc_lash",
+    "short_circuit"
+  ],
+  "flavour": "It flies in erratic circles, convinced it was sent to abduct your lawn.",
+  "rarity": "uncommon",
+  "sprite_prompt": "Flat circular saucer body of bright lime-green composite, ringed with dark metallic ridges, featuring three slender segmented antennae and twin rear electric stabilizer fins.",
+  "first_seen": "2026-09-19T09:53:55",
+  "sightings": 1,
+  "photo_hash": "4c556b7a5d3d",
+  "sprite": "flying_disc_0.png",
+  "timing": {
+    "vision_s": 12.19,
+    "image_s": 5.26,
+    "total_s": 17.62
+  }
+}

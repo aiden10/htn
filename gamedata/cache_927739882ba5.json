@@ -1,0 +1,30 @@
+{
+  "species": "can",
+  "species_key": "can",
+  "name": "Fizzcan",
+  "type": "tide",
+  "stats": {
+    "hp": 95,
+    "attack": 85,
+    "defense": 120,
+    "speed": 100
+  },
+  "moves": [
+    "drizzle_jab",
+    "undertow",
+    "rinse",
+    "pebble_toss"
+  ],
+  "flavour": "It shakes violently before spraying foes with pressurized carbonation.",
+  "rarity": "common",
+  "sprite_prompt": "Cylindrical metallic green body with golden heraldic crests, silver rimmed feet, and a pop-tab lever releasing persistent fizzy bubbles.",
+  "first_seen": "2026-09-19T20:45:52",
+  "sightings": 1,
+  "photo_hash": "927739882ba5",
+  "sprite": "can_0.png",
+  "timing": {
+    "vision_s": 26.04,
+    "image_s": 12.14,
+    "total_s": 38.27
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "species": "rubber duck",
+  "species_key": "rubber_duck",
+  "name": "Quackshade",
+  "type": "tide",
+  "stats": {
+    "hp": 110,
+    "attack": 75,
+    "defense": 105,
+    "speed": 110
+  },
+  "moves": [
+    "drizzle_jab",
+    "undertow",
+    "rinse",
+    "heat_haze"
+  ],
+  "flavour": "Too cool to sink, it drifts serenely through the fiercest whirlpools.",
+  "rarity": "uncommon",
+  "sprite_prompt": "A plump buoyant avian creature with bright yellow plumage, stubby paddle wings, rounded tail feathers, and a sleek black sun-visor strapped snugly around its head.",
+  "first_seen": "2026-09-19T21:18:15",
+  "sightings": 1,
+  "photo_hash": "14af28097355",
+  "sprite": "rubber_duck_0.png",
+  "timing": {
+    "vision_s": 6.95,
+    "image_s": 3.71,
+    "total_s": 10.75
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "species": "water_bottle",
+  "species_key": "water_bottle",
+  "name": "Flaskit",
+  "type": "tide",
+  "stats": {
+    "hp": 110,
+    "attack": 70,
+    "defense": 140,
+    "speed": 80
+  },
+  "moves": [
+    "drizzle_jab",
+    "rinse",
+    "tidal_slam",
+    "bedrock_stance"
+  ],
+  "flavour": "It keeps its inner fluids frosty even in the most heated battles.",
+  "rarity": "common",
+  "sprite_prompt": "Stout cylindrical body coated in matte sky-blue enamel, silver cap-like crest on head, stubby insulated legs, silicone grip ring around waist, condensation droplets trickling down sides.",
+  "first_seen": "2026-09-19T21:14:50",
+  "sightings": 6,
+  "photo_hash": "07652fb85e30",
+  "sprite": "water_bottle_0.png",
+  "timing": {
+    "vision_s": 5.61,
+    "image_s": 0.0,
+    "total_s": 5.61
+  }
+}

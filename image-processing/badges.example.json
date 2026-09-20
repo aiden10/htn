@@ -1,0 +1,14 @@
+{
+  "_comment": [
+    "Copy to badges.json and fill in. The HTN-ID is the five characters the",
+    "badge shows after it joins wifi; the key is whatever you set under",
+    "Settings -> App key on that badge. badges.json is gitignored -- the key",
+    "is a shared secret and anyone holding it can draw on your screen.",
+    "Order matters for --assign rotate: the first squeeze goes to the first."
+  ],
+  "base": "https://badge.solana-htn.com",
+  "badges": [
+    { "id": "xb2b9", "key": "changeme1", "label": "Amar" },
+    { "id": "q7k4f", "key": "changeme2", "label": "Aiden" }
+  ]
+}

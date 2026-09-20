@@ -1,0 +1,30 @@
+{
+  "species": "die",
+  "species_key": "die",
+  "name": "Polyhedroll",
+  "type": "stone",
+  "stats": {
+    "hp": 95,
+    "attack": 85,
+    "defense": 130,
+    "speed": 90
+  },
+  "moves": [
+    "pebble_toss",
+    "grind_down",
+    "boulder_drop",
+    "bedrock_stance"
+  ],
+  "flavour": "It decides whether to obey its trainer based entirely on its own rolls.",
+  "rarity": "uncommon",
+  "sprite_prompt": "Twenty-sided icosahedron body made of dark charcoal slate with glowing mint-green numbered facets, supported by four stubby rocky legs and a short crystalline tail.",
+  "first_seen": "2026-09-19T21:16:08",
+  "sightings": 1,
+  "photo_hash": "c4a6550fc6f5",
+  "sprite": "die_0.png",
+  "timing": {
+    "vision_s": 13.25,
+    "image_s": 3.42,
+    "total_s": 16.74
+  }
+}

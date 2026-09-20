@@ -1,0 +1,30 @@
+{
+  "species": "balloon animal",
+  "species_key": "balloon_animal",
+  "name": "Popanzee",
+  "type": "circuit",
+  "stats": {
+    "hp": 75,
+    "attack": 85,
+    "defense": 60,
+    "speed": 180
+  },
+  "moves": [
+    "static_nip",
+    "overclock",
+    "arc_lash",
+    "short_circuit"
+  ],
+  "flavour": "Loves rubbing against wool sweaters to store up devastating shocks.",
+  "rarity": "uncommon",
+  "sprite_prompt": "Segmented bulbous body made of glossy cream-coloured inflated segments, sausage-like rounded limbs, curled tail, small spherical ear nubs, and a knotted rubbery tip atop the head.",
+  "first_seen": "2026-09-19T21:18:04",
+  "sightings": 1,
+  "photo_hash": "d5c59f927d62",
+  "sprite": "balloon_animal_0.png",
+  "timing": {
+    "vision_s": 9.74,
+    "image_s": 4.36,
+    "total_s": 14.2
+  }
+}

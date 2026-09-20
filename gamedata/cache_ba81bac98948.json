@@ -1,0 +1,30 @@
+{
+  "species": "apple",
+  "species_key": "apple",
+  "name": "Tartling",
+  "type": "verdant",
+  "stats": {
+    "hp": 110,
+    "attack": 75,
+    "defense": 125,
+    "speed": 90
+  },
+  "moves": [
+    "bloom_burst",
+    "photosynth",
+    "root_bind",
+    "thorn_tap"
+  ],
+  "flavour": "It stays crisp under pressure, but loses its temper if left out too long.",
+  "rarity": "common",
+  "sprite_prompt": "A round bright green pomaceous body with a woody stalk horn, two stubby root-like feet, and small leafy shoulders displaying a bite-shaped indentation.",
+  "first_seen": "2026-09-19T09:49:39",
+  "sightings": 5,
+  "photo_hash": "ba81bac98948",
+  "sprite": "apple_1.png",
+  "timing": {
+    "vision_s": 14.05,
+    "image_s": 0.0,
+    "total_s": 14.05
+  }
+}

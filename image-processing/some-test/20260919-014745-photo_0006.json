@@ -1,0 +1,30 @@
+{
+  "species": "water_bottle",
+  "species_key": "water_bottle",
+  "name": "Gulpup",
+  "type": "tide",
+  "stats": {
+    "hp": 110,
+    "attack": 75,
+    "defense": 145,
+    "speed": 70
+  },
+  "moves": [
+    "rinse",
+    "tidal_slam",
+    "drizzle_jab",
+    "bedrock_stance"
+  ],
+  "flavour": "It keeps liquids ice-cold and tempers even colder during heated skirmishes.",
+  "rarity": "common",
+  "sprite_prompt": "A cylindrical pastel blue flask body with a dark grey screw-cap crest, stubby metallic feet, and condensation droplets trickling down insulated steel flanks.",
+  "first_seen": "2026-09-19T21:18:28",
+  "sightings": 2,
+  "photo_hash": "69c03482f5b7",
+  "sprite": "water_bottle_1.png",
+  "timing": {
+    "vision_s": 5.44,
+    "image_s": 6.05,
+    "total_s": 11.55
+  }
+}

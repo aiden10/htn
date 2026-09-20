@@ -1,0 +1,30 @@
+{
+  "species": "water bottle",
+  "species_key": "water_bottle",
+  "name": "Gulpup",
+  "type": "tide",
+  "stats": {
+    "hp": 110,
+    "attack": 75,
+    "defense": 145,
+    "speed": 70
+  },
+  "moves": [
+    "rinse",
+    "tidal_slam",
+    "drizzle_jab",
+    "bedrock_stance"
+  ],
+  "flavour": "It rattles loudly when dropped during an uncomfortably quiet lecture.",
+  "rarity": "common",
+  "sprite_prompt": "Cylindrical powder-blue canister body, polished silver ring around the neck, curved loop handle tail, four squat rubbery feet, crowned with a rectangular drinking spout crest.",
+  "first_seen": "2026-09-19T21:18:28",
+  "sightings": 1,
+  "photo_hash": "30ba52cb3cc5",
+  "sprite": "water_bottle_0.png",
+  "timing": {
+    "vision_s": 8.95,
+    "image_s": 5.75,
+    "total_s": 14.77
+  }
+}

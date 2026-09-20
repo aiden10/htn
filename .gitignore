@@ -4,4 +4,6 @@ server/data/
 server/uploads/
 server/.env
 image-processing/gamedata/
+image-processing/creatures/
+image-processing/badges.json
 end-to-end-runs

@@ -1,0 +1,30 @@
+{
+  "species": "balloon_animal",
+  "species_key": "balloon_animal",
+  "name": "Babloon",
+  "type": "circuit",
+  "stats": {
+    "hp": 60,
+    "attack": 60,
+    "defense": 100,
+    "speed": 180
+  },
+  "moves": [
+    "static_nip",
+    "arc_lash",
+    "overclock",
+    "heat_haze"
+  ],
+  "flavour": "It builds massive static charges by floating menacingly past wool sweaters.",
+  "rarity": "uncommon",
+  "sprite_prompt": "Bulbous lime-green spherical head atop an elongated metallic-silver tubular torso, with flexible sausage-shaped limbs and rounded joint nodes.",
+  "first_seen": "2026-09-19T21:14:27",
+  "sightings": 3,
+  "photo_hash": "cf9b35a73ab9",
+  "sprite": "balloon_animal_2.png",
+  "timing": {
+    "vision_s": 7.11,
+    "image_s": 4.5,
+    "total_s": 11.69
+  }
+}

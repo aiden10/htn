@@ -1,0 +1,213 @@
+{
+  "apple": {
+    "name": "Tartling",
+    "type": "verdant",
+    "stats": {
+      "hp": 110,
+      "attack": 75,
+      "defense": 125,
+      "speed": 90
+    },
+    "moves": [
+      "bloom_burst",
+      "photosynth",
+      "root_bind",
+      "thorn_tap"
+    ],
+    "rarity": "common",
+    "first_seen": "2026-09-19T09:49:39",
+    "sightings": 5,
+    "sprites": [
+      "apple_0.png",
+      "apple_1.png",
+      "apple_2.png"
+    ]
+  },
+  "balloon_animal": {
+    "name": "Inflatape",
+    "type": "circuit",
+    "stats": {
+      "hp": 70,
+      "attack": 85,
+      "defense": 85,
+      "speed": 160
+    },
+    "moves": [
+      "static_nip",
+      "overclock",
+      "arc_lash",
+      "short_circuit"
+    ],
+    "rarity": "uncommon",
+    "first_seen": "2026-09-19T09:51:05",
+    "sightings": 7,
+    "sprites": [
+      "balloon_animal_0.png",
+      "balloon_animal_1.png",
+      "balloon_animal_2.png"
+    ]
+  },
+  "rubber_duck": {
+    "name": "Quackool",
+    "type": "tide",
+    "stats": {
+      "hp": 110,
+      "attack": 75,
+      "defense": 125,
+      "speed": 90
+    },
+    "moves": [
+      "drizzle_jab",
+      "undertow",
+      "rinse",
+      "heat_haze"
+    ],
+    "rarity": "uncommon",
+    "first_seen": "2026-09-19T09:51:23",
+    "sightings": 4,
+    "sprites": [
+      "rubber_duck_0.png",
+      "rubber_duck_1.png",
+      "rubber_duck_2.png"
+    ]
+  },
+  "water_bottle": {
+    "name": "Flaskle",
+    "type": "tide",
+    "stats": {
+      "hp": 110,
+      "attack": 65,
+      "defense": 145,
+      "speed": 80
+    },
+    "moves": [
+      "drizzle_jab",
+      "rinse",
+      "tidal_slam",
+      "bedrock_stance"
+    ],
+    "rarity": "common",
+    "first_seen": "2026-09-19T09:51:33",
+    "sightings": 6,
+    "sprites": [
+      "water_bottle_0.png",
+      "water_bottle_1.png",
+      "water_bottle_2.png"
+    ]
+  },
+  "die": {
+    "name": "Polyhedroll",
+    "type": "stone",
+    "stats": {
+      "hp": 110,
+      "attack": 85,
+      "defense": 145,
+      "speed": 60
+    },
+    "moves": [
+      "pebble_toss",
+      "grind_down",
+      "boulder_drop",
+      "bedrock_stance"
+    ],
+    "rarity": "rare",
+    "first_seen": "2026-09-19T09:53:08",
+    "sightings": 3,
+    "sprites": [
+      "die_0.png",
+      "die_1.png",
+      "die_2.png"
+    ]
+  },
+  "flying_disc": {
+    "name": "Discovolt",
+    "type": "circuit",
+    "stats": {
+      "hp": 75,
+      "attack": 110,
+      "defense": 65,
+      "speed": 150
+    },
+    "moves": [
+      "static_nip",
+      "overclock",
+      "arc_lash",
+      "short_circuit"
+    ],
+    "rarity": "uncommon",
+    "first_seen": "2026-09-19T09:53:55",
+    "sightings": 1,
+    "sprites": [
+      "flying_disc_0.png"
+    ]
+  },
+  "circuit_board": {
+    "name": "Badgewatt",
+    "type": "circuit",
+    "stats": {
+      "hp": 80,
+      "attack": 110,
+      "defense": 90,
+      "speed": 120
+    },
+    "moves": [
+      "static_nip",
+      "overclock",
+      "arc_lash",
+      "short_circuit"
+    ],
+    "rarity": "uncommon",
+    "first_seen": "2026-09-19T09:54:56",
+    "sightings": 2,
+    "sprites": [
+      "circuit_board_0.png",
+      "circuit_board_1.png"
+    ]
+  },
+  "computer_mouse": {
+    "name": "Scrollent",
+    "type": "circuit",
+    "stats": {
+      "hp": 65,
+      "attack": 85,
+      "defense": 90,
+      "speed": 160
+    },
+    "moves": [
+      "static_nip",
+      "overclock",
+      "arc_lash",
+      "short_circuit"
+    ],
+    "rarity": "common",
+    "first_seen": "2026-09-19T09:55:36",
+    "sightings": 7,
+    "sprites": [
+      "computer_mouse_0.png",
+      "computer_mouse_1.png",
+      "computer_mouse_2.png"
+    ]
+  },
+  "can": {
+    "name": "Fizzcan",
+    "type": "tide",
+    "stats": {
+      "hp": 95,
+      "attack": 85,
+      "defense": 120,
+      "speed": 100
+    },
+    "moves": [
+      "drizzle_jab",
+      "undertow",
+      "rinse",
+      "pebble_toss"
+    ],
+    "rarity": "common",
+    "first_seen": "2026-09-19T20:45:52",
+    "sightings": 1,
+    "sprites": [
+      "can_0.png"
+    ]
+  }
+}

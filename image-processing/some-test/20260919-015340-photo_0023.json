@@ -1,0 +1,30 @@
+{
+  "species": "balloon_animal",
+  "species_key": "balloon_animal",
+  "name": "Babloon",
+  "type": "circuit",
+  "stats": {
+    "hp": 60,
+    "attack": 60,
+    "defense": 100,
+    "speed": 180
+  },
+  "moves": [
+    "static_nip",
+    "arc_lash",
+    "overclock",
+    "heat_haze"
+  ],
+  "flavour": "It hovers menacingly, terrified only of sharp pencils and stray thumbtacks.",
+  "rarity": "uncommon",
+  "sprite_prompt": "Bulbous spherical lime-green head atop a tubular silver twisted body, with narrow segmented limbs, rubbery inflated surface, and small antenna nodes.",
+  "first_seen": "2026-09-19T21:14:27",
+  "sightings": 4,
+  "photo_hash": "dda335d9361c",
+  "sprite": "balloon_animal_1.png",
+  "timing": {
+    "vision_s": 11.81,
+    "image_s": 0.0,
+    "total_s": 11.81
+  }
+}

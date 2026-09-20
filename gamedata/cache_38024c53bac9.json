@@ -1,0 +1,30 @@
+{
+  "species": "balloon_animal",
+  "species_key": "balloon_animal",
+  "name": "Inflatape",
+  "type": "circuit",
+  "stats": {
+    "hp": 70,
+    "attack": 85,
+    "defense": 85,
+    "speed": 160
+  },
+  "moves": [
+    "static_nip",
+    "overclock",
+    "arc_lash",
+    "short_circuit"
+  ],
+  "flavour": "Rubbing its rubbery limbs creates enough static electricity to shock unwary predators.",
+  "rarity": "uncommon",
+  "sprite_prompt": "Inflated tubular torso, coiled balloon limbs, rounded ear lobes, beige belly, light brown twisted rubbery segments, long curled tail crackling with static sparks.",
+  "first_seen": "2026-09-19T09:51:05",
+  "sightings": 6,
+  "photo_hash": "38024c53bac9",
+  "sprite": "balloon_animal_0.png",
+  "timing": {
+    "vision_s": 7.83,
+    "image_s": 0.0,
+    "total_s": 7.84
+  }
+}

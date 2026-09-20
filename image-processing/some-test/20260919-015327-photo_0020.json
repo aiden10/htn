@@ -1,0 +1,30 @@
+{
+  "species": "flying disc",
+  "species_key": "flying_disc",
+  "name": "Discolien",
+  "type": "circuit",
+  "stats": {
+    "hp": 60,
+    "attack": 85,
+    "defense": 75,
+    "speed": 180
+  },
+  "moves": [
+    "static_nip",
+    "overclock",
+    "arc_lash",
+    "heat_haze"
+  ],
+  "flavour": "It spins through the atmosphere pretending to conduct serious interplanetary surveillance.",
+  "rarity": "rare",
+  "sprite_prompt": "Flat circular neon-green saucer body with a curved aerodynamic rim, four tiny hovering metallic antennae, and pulsing concentric glowing yellow ring markings.",
+  "first_seen": "2026-09-19T21:16:47",
+  "sightings": 1,
+  "photo_hash": "4c556b7a5d3d",
+  "sprite": "flying_disc_0.png",
+  "timing": {
+    "vision_s": 9.89,
+    "image_s": 3.64,
+    "total_s": 13.61
+  }
+}
