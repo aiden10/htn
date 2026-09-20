@@ -176,6 +176,7 @@ def pokeball_profile(creature: Mapping[str, object]) -> dict[str, object]:
         "type",
         "stats",
         "moves",
+        "battle_natures",
         "flavour",
         "sprite_prompt",
         "rarity",
@@ -185,8 +186,8 @@ def pokeball_profile(creature: Mapping[str, object]) -> dict[str, object]:
         raise RuntimeError(
             "Image pipeline did not provide required fields: " + ", ".join(missing)
         )
-    # Pydantic gives camera-originated model output the same validation as a
-    # dashboard/API-created Pokemon before the SQLite record is constructed.
+    # Pydantic enforces the battle-ready capture contract here: four distinct
+    # moves and two to four distinct nature tags before SQLite sees the record.
     return Pokemon.model_validate({field: creature[field] for field in fields}).model_dump(
         by_alias=True, mode="json"
     )

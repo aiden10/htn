@@ -160,6 +160,7 @@ class SimulationService:
                 element="earth",
                 stats=PokemonStats(hp=110, attack=70, defense=130, speed=90),
                 moves=["chip_shot", "steam_vent", "handle_bash", "glaze_over"],
+                battle_natures=["ceramic", "heated", "fragile"],
                 flavour="Fiercely territorial about its coaster.",
                 sprite_prompt=(
                     "a squat round ceramic creature with a curved handle arm, "
@@ -174,6 +175,7 @@ class SimulationService:
                 element="grass",
                 stats=PokemonStats(hp=72, attack=58, defense=64, speed=76),
                 moves=["leaf_peek", "sprout_dash", "root_tap", "pollen_puff"],
+                battle_natures=["verdant", "rooted", "buoyant"],
                 flavour="Collects unusual leaves and asks too many questions.",
                 sprite_prompt="a tiny bright green seedling creature with leaf ears and a curious face",
                 rarity="common",
@@ -244,6 +246,7 @@ class SimulationService:
                 element="electric",
                 stats=PokemonStats(hp=64, attack=78, defense=52, speed=118),
                 moves=["static_pounce", "spring_dash", "copper_purr", "bolt_ball"],
+                battle_natures=["clockwork", "conductive", "temporal"],
                 flavour="Keeps a meticulous collection of shiny screws.",
                 sprite_prompt="a small brass clockwork kitten with a coiled tail and blue sparks",
                 rarity="common",

@@ -78,7 +78,10 @@ def post_photo(session: requests.Session, server: str, photo: Path, device_id: s
 
 def pokemon_payload(creature: dict[str, object]) -> tuple[str, dict[str, object]]:
     pokemon_id = f"mon_test_{uuid4().hex[:12]}"
-    required = ("name", "species", "type", "stats", "moves", "flavour", "sprite_prompt", "rarity")
+    required = (
+        "name", "species", "type", "stats", "moves", "battle_natures",
+        "flavour", "sprite_prompt", "rarity",
+    )
     missing = [field for field in required if field not in creature]
     if missing:
         raise RuntimeError(f"Image-processing result is missing: {', '.join(missing)}")

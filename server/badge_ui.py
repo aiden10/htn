@@ -257,6 +257,7 @@ class PokemonCard:
     sprite_url: str | None = None
     rarity: str = "common"
     stats: Mapping[str, int] = field(default_factory=dict)
+    moves: tuple[str, ...] = ()
     caught_at: str | None = None
 
 
@@ -642,7 +643,7 @@ class DexApp(BadgeApp):
             (
                 Text(detail_x + 62, detail_y + 2, mon.name, theme.text, size=16, max_width=detail_width - 62, scroll=True),
                 Text(detail_x + 62, detail_y + 25, mon.element.upper(), _element_colour(mon.element), size=11, max_width=detail_width - 62, scroll=True),
-                Text(detail_x, detail_y + 64, "PROFILE" if detail_tab == 0 else "STATS", theme.focus, size=11),
+                Text(detail_x, detail_y + 64, "PROFILE" if detail_tab == 0 else "STATS + MOVES", theme.focus, size=11),
             )
         )
         if detail_tab == 0:
@@ -658,9 +659,34 @@ class DexApp(BadgeApp):
             stats = tuple(mon.stats.items())[:4]
             if not stats:
                 operations.append(Text(detail_x, stat_y, "No stats recorded", theme.muted, size=12, max_width=detail_width))
-            for label, value in stats:
-                operations.append(Text(detail_x, stat_y, f"{label.upper()[:3]}  {value}", theme.text, size=13, max_width=detail_width))
-                stat_y += 21
+            for index, (label, value) in enumerate(stats):
+                operations.append(
+                    Text(
+                        detail_x + (index % 2) * 67,
+                        stat_y + (index // 2) * 16,
+                        f"{label.upper()[:3]} {value}",
+                        theme.text,
+                        size=10,
+                        max_width=63,
+                    )
+                )
+            move_y = detail_y + 118
+            operations.append(Text(detail_x, move_y, "MOVES", theme.muted, size=10))
+            moves = mon.moves[:4]
+            if not moves:
+                operations.append(Text(detail_x, move_y + 16, "No moves recorded", theme.muted, size=10, max_width=detail_width))
+            for index, move in enumerate(moves):
+                operations.append(
+                    Text(
+                        detail_x + (index % 2) * 67,
+                        move_y + 15 + (index // 2) * 17,
+                        move.replace("_", " ").upper(),
+                        theme.text,
+                        size=9,
+                        max_width=63,
+                        scroll=True,
+                    )
+                )
         operations.append(Text(14, context.height - 19, f"PAGE {page + 1}/{max(1, (len(pokemon) + self._page_size - 1) // self._page_size)}", theme.muted, size=10))
         return Screen(tuple(operations), scene=self.app_id)
 

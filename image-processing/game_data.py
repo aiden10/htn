@@ -13,6 +13,8 @@ STAT_BUDGET = 400  # every creature gets exactly this, distributed
 STAT_MIN = 40  # no stat may fall below this
 STAT_MAX = 180  # or rise above this
 MOVES_PER_CREATURE = 4
+BATTLE_NATURES_MIN = 2
+BATTLE_NATURES_MAX = 4
 
 TYPES = ["ember", "tide", "verdant", "circuit", "stone"]
 
@@ -159,6 +161,46 @@ MOVES = {
 
 RARITIES = ["common", "uncommon", "rare", "legendary"]
 
+# Short, composable material/behaviour tags used as context by the future
+# battle resolver.  They deliberately describe what a creature fundamentally
+# is rather than duplicate its battle type.  The vision model can only choose
+# from this menu; ``generate.normalise_battle_natures`` supplies safe,
+# deterministic fallbacks when it ignores that instruction.
+BATTLE_NATURES = {
+    "absorbent": "soaks up and holds liquid",
+    "buoyant": "floats or resists sinking",
+    "ceramic": "fired clay; sturdy but can chip",
+    "clockwork": "gears, springs, or wound mechanisms",
+    "conductive": "carries electrical charge",
+    "elastic": "bends or rebounds without breaking",
+    "flammable": "readily catches or feeds flame",
+    "fragile": "cracks or shatters under sharp force",
+    "frozen": "cold, icy, or slowed by frost",
+    "heated": "radiates or stores heat",
+    "heavy": "hard to move or knock aside",
+    "insulated": "resists heat and electrical transfer",
+    "liquid": "flows, splashes, or takes a container's shape",
+    "magnetic": "attracts, repels, or directs metal",
+    "metallic": "metal-bodied or metal-plated",
+    "porous": "full of tiny gaps that trap or leak material",
+    "reflective": "bounces light or visual effects",
+    "rooted": "anchors itself or draws strength from the ground",
+    "sharp": "cuts, pierces, or has a keen edge",
+    "temporal": "keeps, bends, or is closely tied to time",
+    "verdant": "living plant matter; grows and entwines",
+}
+
+# Type makes a sensible baseline even when vision output is malformed.  More
+# specific object tags, such as clockwork or ceramic, are added by the
+# generator when the photographed species suggests them.
+TYPE_BATTLE_NATURES = {
+    "ember": ("heated", "flammable"),
+    "tide": ("liquid", "buoyant"),
+    "verdant": ("verdant", "rooted"),
+    "circuit": ("conductive", "magnetic"),
+    "stone": ("heavy", "porous"),
+}
+
 
 def moves_of_type(t):
     return [k for k, v in MOVES.items() if v["type"] == t]
@@ -171,3 +213,8 @@ def move_menu_for_prompt():
         ids = moves_of_type(t)
         lines.append(f"  {t}: {', '.join(ids)}")
     return "\n".join(lines)
+
+
+def battle_nature_menu_for_prompt():
+    """Compact, semantic tag list for the vision prompt."""
+    return ", ".join(sorted(BATTLE_NATURES))

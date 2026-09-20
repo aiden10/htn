@@ -1,0 +1,53 @@
+{
+  "species": "moss",
+  "species_key": "moss",
+  "name": "Mosspuff",
+  "type": "verdant",
+  "stats": {
+    "hp": 130,
+    "attack": 55,
+    "defense": 135,
+    "speed": 80
+  },
+  "moves": [
+    "photosynth",
+    "root_bind",
+    "rinse",
+    "bedrock_stance"
+  ],
+  "battle_natures": [
+    "absorbent",
+    "rooted",
+    "verdant",
+    "buoyant",
+    "ceramic",
+    "clockwork",
+    "conductive",
+    "elastic",
+    "flammable",
+    "fragile",
+    "frozen",
+    "heated",
+    "heavy",
+    "insulated",
+    "liquid",
+    "magnetic",
+    "metallic",
+    "porous",
+    "reflective",
+    "sharp",
+    "temporal"
+  ],
+  "flavour": "It naps so deeply that whole ecosystems move in rent-free.",
+  "rarity": "common",
+  "sprite_prompt": "Plump mound-shaped body covered in velvety emerald fluff, short stubby root tendril feet, tiny leafy sprouts along its back, and damp dewdrops clinging to its textured surface.",
+  "first_seen": "2026-09-20T00:18:41",
+  "sightings": 1,
+  "photo_hash": "d329e40580a3",
+  "sprite": "moss_0.png",
+  "timing": {
+    "vision_s": 10.01,
+    "image_s": 4.51,
+    "total_s": 14.63
+  }
+}

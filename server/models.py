@@ -33,7 +33,8 @@ class Pokemon(BaseModel):
     species: str = Field(min_length=1, max_length=96)
     element: str = Field(alias="type", min_length=1, max_length=32)
     stats: PokemonStats
-    moves: list[str] = Field(min_length=1, max_length=4)
+    moves: list[str] = Field(min_length=4, max_length=4)
+    battle_natures: list[str] = Field(min_length=2, max_length=4)
     flavour: str = Field(min_length=1, max_length=240)
     sprite_prompt: str = Field(min_length=1, max_length=500)
     rarity: Literal["common", "uncommon", "rare", "legendary"]
@@ -53,9 +54,25 @@ class Pokemon(BaseModel):
     @classmethod
     def normalise_moves(cls, values: list[str]) -> list[str]:
         moves = [value.strip().lower().replace(" ", "_") for value in values if value.strip()]
-        if not moves:
-            raise ValueError("At least one move is required.")
+        if len(moves) != 4:
+            raise ValueError("Exactly four moves are required.")
+        if len(set(moves)) != len(moves):
+            raise ValueError("Pokemon moves cannot be duplicated.")
         return moves
+
+    @field_validator("battle_natures")
+    @classmethod
+    def normalise_battle_natures(cls, values: list[str]) -> list[str]:
+        natures = [
+            value.strip().lower().replace(" ", "_")
+            for value in values
+            if isinstance(value, str) and value.strip()
+        ]
+        if not 2 <= len(natures) <= 4:
+            raise ValueError("Pokemon needs two to four battle-nature tags.")
+        if len(set(natures)) != len(natures):
+            raise ValueError("Battle-nature tags cannot be duplicated.")
+        return natures
 
 
 class PokemonPersonality(BaseModel):

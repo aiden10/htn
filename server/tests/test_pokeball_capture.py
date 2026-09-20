@@ -77,7 +77,8 @@ class PokeballCaptureTests(unittest.IsolatedAsyncioTestCase):
             "species": "camera lens",
             "type": "tide",
             "stats": {"hp": 72, "attack": 65, "defense": 58, "speed": 91},
-            "moves": ["splash", "focus_pulse"],
+            "moves": ["drizzle_jab", "undertow", "tidal_slam", "rinse"],
+            "battle_natures": ["fragile", "reflective", "liquid"],
             "flavour": "It frames every puddle like a masterpiece.",
             "sprite_prompt": "round blue lens creature with fin-like shutters",
             "rarity": "uncommon",
@@ -96,6 +97,8 @@ class PokeballCaptureTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(pokemon[0].name, "Snapfin")
         self.assertEqual(pokemon[0].captured_by_badge_id, self.badge.badge_id)
         self.assertEqual(pokemon[0].metadata["source"], "pokeball-camera")
+        self.assertEqual(len(pokemon[0].moves), 4)
+        self.assertEqual(pokemon[0].battle_natures, ("fragile", "reflective", "liquid"))
         self.assertEqual(self.runtime.refreshed_players, ["camera_player"])
         assert pokemon[0].sprite_path is not None
         self.assertTrue(self.sprites.source_path(pokemon[0].sprite_path).is_file())
@@ -106,7 +109,8 @@ class PokeballCaptureTests(unittest.IsolatedAsyncioTestCase):
             "species": "camera flash flower",
             "type": "light",
             "stats": {"hp": 40, "attack": 63, "defense": 47, "speed": 88},
-            "moves": ["flash"],
+            "moves": ["cinder_flick", "scorch_wave", "flare_charge", "heat_haze"],
+            "battle_natures": ["heated", "fragile"],
             "flavour": "It opens only when someone smiles for a picture.",
             "sprite_prompt": "small glowing flower creature",
             "rarity": "common",

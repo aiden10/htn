@@ -91,6 +91,7 @@ Good: 'rubber duck', 'water bottle', 'mug'. Bad: 'yellow rubber duck', 'insulate
   "type": "<one of: {types}>",
   "stats": {{"hp": <int>, "attack": <int>, "defense": <int>, "speed": <int>}},
   "moves": ["<id>", "<id>", "<id>", "<id>"],
+  "battle_natures": ["<tag>", "<tag>"],
   "flavour": "<one witty sentence, under 15 words>",
   "rarity": "<one of: {rarities}>",
   "sprite_prompt": "<body shape, limbs, colours, distinctive features. 15-30 words. \
@@ -102,6 +103,8 @@ Rules:
 - stats must sum to exactly {budget}, each between {smin} and {smax}
 - moves must be exactly {nmoves} ids chosen from this table, at least two matching the creature's type:
 {move_menu}
+- battle_natures must contain {nature_min}-{nature_max} distinct tags chosen only from this list:
+{battle_nature_menu}
 - If the photo mainly shows a person, a face, or no clear object, set species to
   "unknown artifact" and design an abstract wisp creature instead.
 """
@@ -116,6 +119,9 @@ def build_vision_prompt(known=()):
         smax=G.STAT_MAX,
         nmoves=G.MOVES_PER_CREATURE,
         move_menu=G.move_menu_for_prompt(),
+        nature_min=G.BATTLE_NATURES_MIN,
+        nature_max=G.BATTLE_NATURES_MAX,
+        battle_nature_menu=G.battle_nature_menu_for_prompt(),
     )
     if known:
         base += (
@@ -164,18 +170,100 @@ def normalise_stats(stats):
 
 
 def normalise_moves(moves, ctype):
-    clean = []
+    requested = []
     for m in moves if isinstance(moves, list) else []:
         mid = _slug(m)
-        if mid in G.MOVES and mid not in clean:
+        if mid in G.MOVES and mid not in requested:
+            requested.append(mid)
+
+    # Preserve the generator's choices where possible, but reserve two slots
+    # for same-type moves.  The prompt asks for this; normalization makes it a
+    # hard invariant rather than a best-effort model instruction.
+    clean = [mid for mid in requested if G.MOVES[mid]["type"] == ctype][:2]
+    for mid in G.moves_of_type(ctype):
+        if len(clean) >= 2:
+            break
+        if mid not in clean:
             clean.append(mid)
 
-    for mid in G.moves_of_type(ctype) + list(G.MOVES.keys()):
+    for mid in requested + G.moves_of_type(ctype) + list(G.MOVES.keys()):
         if len(clean) >= G.MOVES_PER_CREATURE:
             break
         if mid not in clean:
             clean.append(mid)
+
     return clean[: G.MOVES_PER_CREATURE]
+
+
+_SPECIES_NATURE_HINTS = {
+    "clock": ("clockwork", "temporal"),
+    "watch": ("clockwork", "temporal"),
+    "gear": ("clockwork", "metallic"),
+    "spring": ("clockwork", "elastic"),
+    "magnet": ("magnetic", "metallic"),
+    "battery": ("conductive", "insulated"),
+    "wire": ("conductive", "metallic"),
+    "glass": ("fragile", "reflective"),
+    "lens": ("fragile", "reflective"),
+    "mirror": ("fragile", "reflective"),
+    "mug": ("ceramic", "heavy"),
+    "cup": ("ceramic", "porous"),
+    "ceramic": ("ceramic", "fragile"),
+    "ice": ("frozen", "reflective"),
+    "rubber": ("elastic", "insulated"),
+    "sponge": ("absorbent", "porous"),
+    "leaf": ("verdant", "rooted"),
+    "plant": ("verdant", "rooted"),
+}
+
+
+def normalise_battle_natures(natures, ctype, species):
+    """Return 2-4 distinct, catalogued semantic tags.
+
+    The model's answer is preferred, but malformed or sparse answers still
+    produce a battle-ready profile.  The fill order preserves object-specific
+    traits, adds type fundamentals, then uses a stable species hash so the
+    same object receives the same final fallback tags across server restarts.
+    """
+
+    clean = []
+    for nature in natures if isinstance(natures, list) else []:
+        tag = _slug(nature)
+        if tag in G.BATTLE_NATURES and tag not in clean:
+            clean.append(tag)
+            if len(clean) == G.BATTLE_NATURES_MAX:
+                return clean
+
+    species_key = _slug(species)
+    for keyword, tags in _SPECIES_NATURE_HINTS.items():
+        if keyword in species_key:
+            for tag in tags:
+                if tag not in clean:
+                    clean.append(tag)
+                    if len(clean) == G.BATTLE_NATURES_MAX:
+                        return clean
+
+    for tag in G.TYPE_BATTLE_NATURES.get(ctype, ()):
+        if tag not in clean:
+            clean.append(tag)
+            if len(clean) == G.BATTLE_NATURES_MAX:
+                return clean
+
+    # Type/object tags may already satisfy the contract.  Do not walk the
+    # fallback catalogue in that case: doing so would keep adding tags because
+    # the count has already passed the equality check below.
+    if len(clean) >= G.BATTLE_NATURES_MIN:
+        return clean[: G.BATTLE_NATURES_MAX]
+
+    all_tags = sorted(G.BATTLE_NATURES)
+    start = int(hashlib.sha256(species_key.encode("utf-8")).hexdigest()[:8], 16) % len(all_tags)
+    for offset in range(len(all_tags)):
+        tag = all_tags[(start + offset) % len(all_tags)]
+        if tag not in clean:
+            clean.append(tag)
+            if len(clean) >= G.BATTLE_NATURES_MIN:
+                break
+    return clean
 
 
 def validate(raw):
@@ -197,6 +285,9 @@ def validate(raw):
         "type": ctype,
         "stats": normalise_stats(raw.get("stats", {})),
         "moves": normalise_moves(raw.get("moves"), ctype),
+        "battle_natures": normalise_battle_natures(
+            raw.get("battle_natures"), ctype, species
+        ),
         "flavour": str(raw.get("flavour", "")).strip()[:120],
         "rarity": rarity,
         "sprite_prompt": str(raw.get("sprite_prompt", species)).strip()[:400],
@@ -229,12 +320,19 @@ def lock_identity(creature, reg):
     entry = reg.setdefault(key, {})
 
     if entry.get("name"):
+        # Normalize historical registry values too.  An earlier development
+        # build could have written more than four fallback tags; one bad
+        # registry row must not poison every later sighting of that species.
+        entry["battle_natures"] = normalise_battle_natures(
+            entry.get("battle_natures"), entry["type"], creature["species"]
+        )
         creature.update(
             {
                 "name": entry["name"],
                 "type": entry["type"],
                 "stats": entry["stats"],
                 "moves": entry["moves"],
+                "battle_natures": entry["battle_natures"],
                 "rarity": entry["rarity"],
                 "first_seen": entry.get("first_seen"),
             }
@@ -247,6 +345,7 @@ def lock_identity(creature, reg):
                 "type": creature["type"],
                 "stats": creature["stats"],
                 "moves": creature["moves"],
+                "battle_natures": creature["battle_natures"],
                 "rarity": creature["rarity"],
                 "first_seen": time.strftime("%Y-%m-%dT%H:%M:%S"),
                 "sightings": 1,
@@ -317,6 +416,13 @@ def process(photo_path, out_dir, data_dir, cache=True, make_sprite=True):
     if cache and os.path.exists(cache_path):
         with open(cache_path) as f:
             creature = json.load(f)
+        # Older cache records predate battle natures (and some predate the
+        # strict four-move normalizer). Repair them before they reach a badge.
+        normalized = validate(creature)
+        creature["moves"] = normalized["moves"]
+        creature["battle_natures"] = normalized["battle_natures"]
+        with open(cache_path, "w") as f:
+            json.dump(creature, f, indent=2)
         sprite = creature.get("sprite")
         if not sprite or os.path.exists(os.path.join(data_dir, sprite)):
             print(f"{stem}: cached -> {creature['name']} ($0.00)")

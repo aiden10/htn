@@ -189,6 +189,22 @@ def _normalise_moves(values: Sequence[str]) -> tuple[str, ...]:
     return result
 
 
+def _normalise_battle_natures(values: Sequence[str]) -> tuple[str, ...]:
+    """Normalize optional tags while keeping pre-battle records readable."""
+
+    if isinstance(values, str) or not isinstance(values, Sequence):
+        raise ValueError("battle_natures must be a sequence of strings.")
+    result = tuple(
+        _text(value, "battle_nature", maximum=48).lower().replace(" ", "_")
+        for value in values
+    )
+    if len(result) > 4:
+        raise ValueError("Pokemon may have at most four battle-nature tags.")
+    if len(set(result)) != len(result):
+        raise ValueError("Pokemon battle-nature tags cannot be duplicated.")
+    return result
+
+
 @dataclass(frozen=True, slots=True)
 class Player:
     player_id: str
@@ -238,6 +254,7 @@ class PokemonRecord:
     sprite_path: str | None
     captured_by_badge_id: str | None
     metadata: Mapping[str, JSONValue] = field(default_factory=dict)
+    battle_natures: tuple[str, ...] = ()
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
 
@@ -352,6 +369,7 @@ def pokemon_to_dict(pokemon: PokemonRecord) -> dict[str, JSONValue]:
         "type": pokemon.types[0],
         "stats": dict(pokemon.stats),
         "moves": list(pokemon.moves),
+        "battle_natures": list(pokemon.battle_natures),
         "flavour": pokemon.flavour,
         "sprite_prompt": pokemon.sprite_prompt,
         "rarity": pokemon.rarity,
@@ -440,6 +458,7 @@ def pokemon_from_dict(
         types=_normalise_types(raw_types),
         stats=_normalise_stats(payload.get("stats", {})),
         moves=_normalise_moves(payload.get("moves", ())),
+        battle_natures=_normalise_battle_natures(payload.get("battle_natures", ())),
         flavour=_text(str(payload.get("flavour", "")), "flavour", maximum=240),
         sprite_prompt=_text(str(payload.get("sprite_prompt", "")), "sprite_prompt", maximum=500),
         rarity=_text(str(payload.get("rarity", "common")), "rarity", maximum=32).lower(),
@@ -519,6 +538,7 @@ CREATE TABLE IF NOT EXISTS pokemon (
     types_json TEXT NOT NULL,
     stats_json TEXT NOT NULL,
     moves_json TEXT NOT NULL,
+    battle_natures_json TEXT NOT NULL DEFAULT '[]',
     flavour TEXT NOT NULL,
     sprite_prompt TEXT NOT NULL,
     rarity TEXT NOT NULL,
@@ -608,6 +628,14 @@ class BadgeStore:
     def _initialize(self) -> None:
         with self._lock:
             self.connection.executescript(SCHEMA)
+            columns = {
+                row["name"]
+                for row in self.connection.execute("PRAGMA table_info(pokemon)").fetchall()
+            }
+            if "battle_natures_json" not in columns:
+                self.connection.execute(
+                    "ALTER TABLE pokemon ADD COLUMN battle_natures_json TEXT NOT NULL DEFAULT '[]'"
+                )
 
     def close(self) -> None:
         with self._lock:
@@ -847,9 +875,9 @@ class BadgeStore:
                     """
                     INSERT INTO pokemon(
                         pokemon_id, owner_player_id, captured_by_badge_id, name, species,
-                        types_json, stats_json, moves_json, flavour, sprite_prompt, rarity,
+                        types_json, stats_json, moves_json, battle_natures_json, flavour, sprite_prompt, rarity,
                         sprite_path, caught_at, metadata_json, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     _pokemon_params(pokemon),
                 )
@@ -906,7 +934,7 @@ class BadgeStore:
                 """
                 UPDATE pokemon SET
                     owner_player_id = ?, captured_by_badge_id = ?, name = ?, species = ?,
-                    types_json = ?, stats_json = ?, moves_json = ?, flavour = ?,
+                    types_json = ?, stats_json = ?, moves_json = ?, battle_natures_json = ?, flavour = ?,
                     sprite_prompt = ?, rarity = ?, sprite_path = ?, caught_at = ?,
                     metadata_json = ?, created_at = ?, updated_at = ?
                 WHERE pokemon_id = ?
@@ -1385,8 +1413,14 @@ def _pokemon_from_row(row: sqlite3.Row) -> PokemonRecord:
     raw_types = json_loads(row["types_json"])
     raw_stats = json_loads(row["stats_json"])
     raw_moves = json_loads(row["moves_json"])
+    raw_battle_natures = json_loads(row["battle_natures_json"])
     raw_metadata = json_loads(row["metadata_json"])
-    if not isinstance(raw_types, list) or not isinstance(raw_stats, dict) or not isinstance(raw_moves, list):
+    if (
+        not isinstance(raw_types, list)
+        or not isinstance(raw_stats, dict)
+        or not isinstance(raw_moves, list)
+        or not isinstance(raw_battle_natures, list)
+    ):
         raise ValueError("Stored Pokemon JSON has the wrong shape.")
     if not isinstance(raw_metadata, dict):
         raise ValueError("Stored Pokemon metadata is not an object.")
@@ -1399,6 +1433,7 @@ def _pokemon_from_row(row: sqlite3.Row) -> PokemonRecord:
             types=tuple(raw_types),
             stats=raw_stats,
             moves=tuple(raw_moves),
+            battle_natures=tuple(raw_battle_natures),
             flavour=row["flavour"],
             sprite_prompt=row["sprite_prompt"],
             rarity=row["rarity"],
@@ -1491,6 +1526,7 @@ def _validated_pokemon(pokemon: PokemonRecord) -> PokemonRecord:
         types=_normalise_types(pokemon.types),
         stats=_normalise_stats(pokemon.stats),
         moves=_normalise_moves(pokemon.moves),
+        battle_natures=_normalise_battle_natures(pokemon.battle_natures),
         flavour=_text(pokemon.flavour, "flavour", maximum=240),
         sprite_prompt=_text(pokemon.sprite_prompt, "sprite_prompt", maximum=500),
         rarity=_text(pokemon.rarity, "rarity", maximum=32).lower(),
@@ -1577,6 +1613,7 @@ def _pokemon_params(pokemon: PokemonRecord) -> tuple[Any, ...]:
         json_dumps(list(pokemon.types)),
         json_dumps(dict(pokemon.stats)),
         json_dumps(list(pokemon.moves)),
+        json_dumps(list(pokemon.battle_natures)),
         pokemon.flavour,
         pokemon.sprite_prompt,
         pokemon.rarity,
@@ -1598,6 +1635,7 @@ def _pokemon_update_params(pokemon: PokemonRecord) -> tuple[Any, ...]:
         json_dumps(list(pokemon.types)),
         json_dumps(dict(pokemon.stats)),
         json_dumps(list(pokemon.moves)),
+        json_dumps(list(pokemon.battle_natures)),
         pokemon.flavour,
         pokemon.sprite_prompt,
         pokemon.rarity,

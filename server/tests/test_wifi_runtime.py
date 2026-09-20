@@ -24,7 +24,7 @@ if str(SERVER_ROOT) not in sys.path:
 
 from badge_renderer import ScreenRenderer
 from badge_store import BadgeStore, pokemon_from_dict
-from badge_ui import BadgeUi, Clear, Image, Leds, Rect, Screen, Text
+from badge_ui import BadgeUi, BadgeUiContext, Clear, DexApp, Image, Leds, PokemonCard, Rect, Screen, Text
 from htn_gateway import HTNBadgeGateway, InMemoryBadgeTransport
 from shutterdex_runtime import ShutterdexRuntime
 from sprite_assets import SpriteStore
@@ -120,6 +120,29 @@ class ScreenRendererTests(unittest.TestCase):
             ["#ff0000", "#00ff00", "#ff0000", "#00ff00", "#ff0000", "#00ff00"],
         )
         self.assertEqual(renderer.fingerprint(screen), renderer.fingerprint(screen))
+
+    def test_dex_stats_panel_shows_selected_pokemons_moves(self) -> None:
+        context = BadgeUiContext(
+            badge_id="badge_test",
+            player_id="player_test",
+            pokemon=(
+                PokemonCard(
+                    pokemon_id="mon_moves",
+                    name="Coilkit",
+                    species="clockwork kitten",
+                    element="circuit",
+                    stats={"hp": 64, "attack": 78, "defense": 52, "speed": 118},
+                    moves=("static_nip", "overclock", "arc_lash", "short_circuit"),
+                ),
+            ),
+        )
+
+        screen = DexApp().render({"selected": 0, "detail_tab": 1}, context)
+        text = [operation.text for operation in screen.operations if isinstance(operation, Text)]
+
+        self.assertIn("STATS + MOVES", text)
+        self.assertIn("STATIC NIP", text)
+        self.assertIn("SHORT CIRCUIT", text)
 
 
 class WifiRuntimeTests(unittest.IsolatedAsyncioTestCase):

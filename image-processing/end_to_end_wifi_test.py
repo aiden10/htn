@@ -102,7 +102,10 @@ def post_camera_ingress(
 def generated_pokemon_payload(creature: Mapping[str, Any]) -> tuple[str, dict[str, Any]]:
     """Convert the generator's validated creature into the Wi-Fi API shape."""
 
-    required = ("name", "species", "type", "stats", "moves", "flavour", "sprite_prompt", "rarity")
+    required = (
+        "name", "species", "type", "stats", "moves", "battle_natures",
+        "flavour", "sprite_prompt", "rarity",
+    )
     missing = [field for field in required if field not in creature]
     if missing:
         raise RuntimeError(f"Image-processing result is missing: {', '.join(missing)}")

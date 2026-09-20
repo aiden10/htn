@@ -1009,6 +1009,7 @@ class ShutterdexRuntime:
             sprite_url=self._sprite_source(pokemon.sprite_path),
             rarity=pokemon.rarity,
             stats=pokemon.stats,
+            moves=pokemon.moves,
             caught_at=pokemon.caught_at.date().isoformat(),
         )
 
