@@ -33,7 +33,7 @@ from badge_renderer import ScreenRenderer, SpriteImageResolver
 from badge_store import BadgeStore
 from badge_ui import BadgeUi
 from htn_gateway import HTNBadgeGateway, InMemoryBadgeTransport
-from player_simulation import PlayerSimulationService
+from player_simulation import JEV_MODEL, PlayerSimulationService
 from shutterdex_api import router as shutterdex_router
 from shutterdex_runtime import ShutterdexRuntime
 from sprite_assets import SpriteStore
@@ -55,7 +55,7 @@ class MemoryVault:
 
 
 class FakeBackboardClient:
-    """A deterministic local writer + Jev pair; no network request leaves the test."""
+    """A deterministic local writer + Jev pair; no network leaves the test."""
 
     def __init__(self, *, api_key: str) -> None:
         self.api_key = api_key
@@ -102,7 +102,7 @@ class FakeBackboardClient:
                     )
                 },
             )()
-        if kwargs.get("model_name") == "jev-latest":
+        if kwargs.get("model_name") == JEV_MODEL:
             return type(
                 "FakeBackboardResponse",
                 (),
@@ -249,7 +249,7 @@ class ShutterdexApiTests(unittest.IsolatedAsyncioTestCase):
         tick = await self.client.post(f"/shutterdex/players/{player_id}/simulation/tick")
         self.assertEqual(tick.status_code, 200, tick.text)
         simulation = tick.json()["simulation"]
-        self.assertEqual(simulation["director_used"], "jev")
+        self.assertEqual(simulation["jev_used"], "jev")
         self.assertEqual(simulation["player_id"], player_id)
         self.assertEqual(simulation["event"]["actor_pokemon_id"], "mon_sprocket")
         self.assertEqual(

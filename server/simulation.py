@@ -1,4 +1,4 @@
-"""Persistent, server-authoritative Pokemon simulation with an optional Jev director."""
+"""Persistent, server-authoritative Pokemon simulation with an optional Jev."""
 
 from __future__ import annotations
 
@@ -29,6 +29,7 @@ from models import (
 
 
 INTERACTIONS = ("observe", "greet", "play", "challenge", "rest")
+JEV_MODEL = "jev-latest"
 
 
 class WorldStore:
@@ -331,7 +332,7 @@ class SimulationService:
         target_state: PokemonSimulationState | None,
         fallback: SimulationDecision,
     ) -> SimulationDecision:
-        """Ask TypeSafe Jev for a constrained simulation choice, never free prose."""
+        """Ask TypeSafe Jev for a constrained choice, never free prose."""
 
         if not self.backboard_api_key:
             return SimulationDecision(
@@ -399,14 +400,14 @@ class SimulationService:
                 response = await client.send_message(
                     "Select the next simulation beat from the supplied structured world state.",
                     llm_provider="typesafe",
-                    model_name="jev-latest",
+                    model_name=JEV_MODEL,
                     stream=False,
                     system_one={"state": state, "questions": questions},
                 )
             answers = response.system_one.answers if response.system_one else {}
             interaction = answers.get("next_interaction", {}).get("choice")
             if interaction not in INTERACTIONS:
-                raise ValueError("Jev did not return a supported interaction.")
+                raise ValueError("Director did not return a supported interaction.")
             score = answers.get("bond_shift", {}).get("score", 2)
             bond_delta = _bounded(int(round(float(score))) - 2, -2, 2)
             return SimulationDecision(interaction, bond_delta, "jev")
@@ -416,7 +417,7 @@ class SimulationService:
                 fallback.kind,
                 fallback.bond_delta,
                 "fallback",
-                "Jev was unavailable or returned an invalid decision.",
+                "Director was unavailable or returned an invalid decision.",
             )
 
     def _apply_decision(

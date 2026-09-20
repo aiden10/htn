@@ -236,11 +236,11 @@ def main() -> int:
         )
         print(
             "Test tick: "
-            f"director={result['director_used']} "
+            f"director={result['jev_used']} "
             f"backboard_verified={result['backboard_verified']}"
         )
-        if result.get("director_note"):
-            print(f"Note: {result['director_note']}")
+        if result.get("jev_note"):
+            print(f"Note: {result['jev_note']}")
 
     prefix = "" if args.live else "/simulation/test"
     if args.raw_delay < 0 or args.interval <= 0:

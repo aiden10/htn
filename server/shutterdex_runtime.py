@@ -275,7 +275,7 @@ class ShutterdexRuntime:
                 and running is not None
                 and not running.done()
             ):
-                # A Director turn is automatic. Lock every in-app control
+                # A Jev turn is automatic. Lock every in-app control
                 # until it completes so neither navigation nor Back can be
                 # mistaken for a required confirmation or queue extra frames.
                 return None
@@ -953,14 +953,14 @@ class ShutterdexRuntime:
             state = states.get(pokemon_record.pokemon_id)
             if state is None:
                 # Stable fallback positions make a new capture visible before
-                # its first director tick writes explicit movement state.
+                # its first Jev tick writes explicit movement state.
                 x = 16 + (index * 37) % 72
                 y = 22 + (index * 53) % 68
                 mood, energy, activity = "curious", 75, "exploring"
             else:
                 x, y = state.x, state.y
                 mood, energy, activity = state.mood, state.energy, state.activity
-            del energy  # UI currently shows activity/mood; retain it in SQLite for the director.
+            del energy  # UI currently shows activity/mood; retain it in SQLite for Jev.
             creatures.append(
                 HabitatCreature(
                     pokemon_id=pokemon_record.pokemon_id,

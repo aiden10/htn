@@ -7,7 +7,7 @@ every tick reads only the requested player's current Pokemon from
 and appends a player-scoped event.
 
 Every Habitat tick requires a low-cost Backboard writer to propose a small set
-of bounded events, then Backboard/Jev to select one. Movement and persistence
+of bounded events, then Backboard's Jev to select one. Movement and persistence
 remain server-controlled; only Jev's selected event text is displayed. A
 missing key, unavailable SDK, network failure, or invalid model response leaves
 the world unchanged and reports a recoverable error.
@@ -43,7 +43,7 @@ from badge_store import (
 
 
 Interaction = Literal["observe", "greet", "play", "challenge", "rest"]
-Director = Literal["jev"]
+Jev = Literal["jev"]
 INTERACTIONS: frozenset[str] = frozenset(
     {"observe", "greet", "play", "challenge", "rest"}
 )
@@ -52,9 +52,10 @@ INTERACTIONS: frozenset[str] = frozenset(
 LOGGER = logging.getLogger(__name__)
 WRITER_PROVIDER = "openai"
 # Habitat needs three short JSON options, not multi-step reasoning. GPT-4.1
-# Nano is the low-latency OpenAI choice for this bounded writer stage; Jev
-# remains the required selector for every committed Habitat event.
+# Nano is the low-latency OpenAI choice for this bounded writer stage; the
+# Jev remains the required selector for every committed Habitat event.
 DEFAULT_WRITER_MODEL = "gpt-4.1-nano"
+JEV_MODEL = "jev-latest"
 WRITER_EVENT_COUNT = 3
 MAX_EVENT_SUMMARY = 180
 MAX_DIALOGUE_TEXT = 140
@@ -86,7 +87,7 @@ class WorldChangedError(PlayerSimulationError):
 
 
 class JevUnavailableError(PlayerSimulationError):
-    """Raised when a required Backboard/Jev decision cannot be obtained."""
+    """Raised when a required Backboard Jev decision cannot be obtained."""
 
 
 class HabitatWriterUnavailableError(PlayerSimulationError):
@@ -113,10 +114,10 @@ class Personality:
 
 @dataclass(frozen=True, slots=True)
 class SimulationDecision:
-    """Jev's validated choice among the writer's bounded event candidates."""
+    """Jev's validated choice among bounded event candidates."""
 
     kind: Interaction
-    source: Director
+    source: Jev
     event: "ProposedEvent"
     note: str | None = None
 
@@ -149,8 +150,8 @@ class PlayerSimulationResult:
     revision: int
     event: SimulationEventRecord
     world_states: tuple[PokemonWorldState, ...]
-    director_used: Director
-    director_note: str | None
+    jev_used: Jev
+    jev_note: str | None
 
     def to_dict(self) -> dict[str, Any]:
         """Return an API-safe serialization without model/provider internals."""
@@ -160,8 +161,8 @@ class PlayerSimulationResult:
             "revision": self.revision,
             "event": simulation_event_to_dict(self.event),
             "world_states": [world_state_to_dict(state) for state in self.world_states],
-            "director_used": self.director_used,
-            "director_note": self.director_note,
+            "jev_used": self.jev_used,
+            "jev_note": self.jev_note,
         }
 
 
@@ -344,8 +345,8 @@ class PlayerSimulationService:
             revision=revision,
             event=event,
             world_states=tuple(states[creature.pokemon_id] for creature in pokemon),
-            director_used=decision.source,
-            director_note=decision.note,
+            jev_used=decision.source,
+            jev_note=decision.note,
         )
 
     async def _lock_for(self, player_id: str) -> asyncio.Lock:
@@ -450,9 +451,9 @@ class PlayerSimulationService:
         context = {
             "player_id": player_id,
             "revision": revision,
-            "actor": self._director_profile(actor, actor_state, actor_traits),
+            "actor": self._jev_profile(actor, actor_state, actor_traits),
             "target": (
-                self._director_profile(target, target_state, target_traits)
+                self._jev_profile(target, target_state, target_traits)
                 if target is not None and target_state is not None and target_traits is not None
                 else None
             ),
@@ -510,7 +511,7 @@ class PlayerSimulationService:
         pokemon_names: Mapping[str, str],
         proposals: Sequence[ProposedEvent],
     ) -> SimulationDecision:
-        """Have Jev select one writer candidate without inventing new text."""
+        """Have Jev select one writer candidate without new text."""
 
         if not self.backboard_api_key:
             raise JevUnavailableError(
@@ -530,9 +531,9 @@ class PlayerSimulationService:
         state = {
             "player_id": player_id,
             "revision": revision,
-            "actor": self._director_profile(actor, actor_state, actor_traits),
+            "actor": self._jev_profile(actor, actor_state, actor_traits),
             "target": (
-                self._director_profile(target, target_state, target_traits)
+                self._jev_profile(target, target_state, target_traits)
                 if target is not None and target_state is not None and target_traits is not None
                 else None
             ),
@@ -570,7 +571,7 @@ class PlayerSimulationService:
                 response = await client.send_message(
                     "Select only the next structured Shutterdex Habitat event.",
                     llm_provider="typesafe",
-                    model_name="jev-latest",
+                    model_name=JEV_MODEL,
                     stream=False,
                     system_one={"state": state, "questions": questions},
                 )
@@ -579,22 +580,22 @@ class PlayerSimulationService:
         except Exception as exc:
             LOGGER.warning("Habitat Jev request failed (%s)", type(exc).__name__)
             raise JevUnavailableError(
-                "Jev request failed; try again."
+                "Director request failed; try again."
             ) from exc
         try:
             candidate_id = self._jev_choice(response, "next_event")
             selected = candidate_by_id.get(candidate_id or "")
             if selected is None:
-                raise ValueError("Jev did not select an offered Habitat event.")
+                raise ValueError("Director did not select an offered Habitat event.")
             return SimulationDecision(selected.kind, "jev", selected)
         except Exception as exc:
             LOGGER.warning("Habitat Jev response rejected: %s", exc)
             raise JevUnavailableError(
-                "Jev returned an unusable Habitat decision; try again."
+                "Director returned an unusable Habitat decision; try again."
             ) from exc
 
     @staticmethod
-    def _director_profile(
+    def _jev_profile(
         pokemon: PokemonRecord,
         state: PokemonWorldState,
         traits: Personality,
@@ -972,7 +973,7 @@ class PlayerSimulationService:
 
 
 __all__ = [
-    "Director",
+    "Jev",
     "EmptyHabitatError",
     "HabitatWriterUnavailableError",
     "Interaction",

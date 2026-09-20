@@ -700,8 +700,8 @@ async def simulation_tick(
     return SimulationTickResult(
         world=world,
         event=event,
-        director_used=decision.source,
-        director_note=decision.note,
+        jev_used=decision.source,
+        jev_note=decision.note,
     )
 
 
@@ -732,8 +732,8 @@ async def run_simulation_test(
         "isolated_test_world": True,
         "backboard_configured": bool(service.backboard_api_key),
         "backboard_verified": decision.source == "jev",
-        "director_used": decision.source,
-        "director_note": decision.note,
+        "jev_used": decision.source,
+        "jev_note": decision.note,
         "event": event.model_dump(mode="json"),
         "world_revision": world.revision,
         "badge_inbox": "/simulation/test/badge/inbox",
@@ -755,8 +755,8 @@ async def tick_simulation_test(
     )
     return {
         "isolated_test_world": True,
-        "director_used": decision.source,
-        "director_note": decision.note,
+        "jev_used": decision.source,
+        "jev_note": decision.note,
         "event": event.model_dump(mode="json"),
         "world_revision": world.revision,
     }

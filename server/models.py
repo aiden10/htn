@@ -59,7 +59,7 @@ class Pokemon(BaseModel):
 
 
 class PokemonPersonality(BaseModel):
-    """Durable traits used as structured context for the simulation director."""
+    """Durable traits used as structured context for the simulation Jev."""
 
     curiosity: int = Field(default=50, ge=0, le=100)
     sociability: int = Field(default=50, ge=0, le=100)
@@ -101,6 +101,13 @@ class SimulationEvent(BaseModel):
     created_at: datetime = Field(default_factory=utc_now)
     director: Literal["fallback", "jev"] = "fallback"
 
+    @field_validator("director", mode="before")
+    @classmethod
+    def migrate_director_name(cls, value: object) -> object:
+        # A brief UI-oriented rename stored "director" in a few snapshots.
+        # Keep those snapshots readable while preserving the internal provider name.
+        return "jev" if value == "director" else value
+
 
 class WorldSnapshot(BaseModel):
     revision: int = Field(default=0, ge=0)
@@ -111,7 +118,7 @@ class WorldSnapshot(BaseModel):
 
 
 class SimulationTickRequest(BaseModel):
-    """The bridge can disable Jev for a deterministic offline test tick."""
+    """The bridge can disable Jev for a deterministic offline tick."""
 
     prefer_jev: bool = True
 
@@ -119,5 +126,5 @@ class SimulationTickRequest(BaseModel):
 class SimulationTickResult(BaseModel):
     world: WorldSnapshot
     event: SimulationEvent
-    director_used: Literal["fallback", "jev"]
-    director_note: str | None = None
+    jev_used: Literal["fallback", "jev"]
+    jev_note: str | None = None

@@ -380,7 +380,7 @@ class WifiRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(session.app_state["habitat"]["busy"])
         await started.wait()
 
-        # The Director turn is automatic. Every in-app control is a true
+        # The Jev turn is automatic. Every in-app control is a true
         # no-op until it completes: no duplicate transaction, navigation, or
         # redundant frame.
         self.assertIsNone(await self.runtime.handle_button(badge.htn_id, "a"))

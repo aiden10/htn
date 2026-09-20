@@ -16,14 +16,15 @@ if str(SERVER_ROOT) not in sys.path:
 
 from badge_store import BadgeStore, pokemon_from_dict
 from player_simulation import (
-    HabitatWriterUnavailableError,
+    JEV_MODEL,
     JevUnavailableError,
+    HabitatWriterUnavailableError,
     PlayerSimulationService,
 )
 
 
 class FakeBackboardClient:
-    """Local writer + Jev stand-in; no test sends a Backboard request."""
+    """Local writer + Jev stand-in; no test sends a network request."""
 
     calls: list[dict[str, object]] = []
     writer_mode = "valid"
@@ -70,7 +71,7 @@ class FakeBackboardClient:
             return type(
                 "FakeBackboardResponse", (), {"content": json.dumps({"events": events})}
             )()
-        if model_name == "jev-latest":
+        if model_name == JEV_MODEL:
             return type(
                 "FakeBackboardResponse",
                 (),
@@ -130,7 +131,7 @@ class PlayerSimulationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(first.player_id, self.player_a.player_id)
         self.assertEqual(first.revision, 1)
-        self.assertEqual(first.director_used, "jev")
+        self.assertEqual(first.jev_used, "jev")
         self.assertEqual(len(first.world_states), 2)
         self.assertEqual(
             {state.pokemon_id for state in first.world_states}, {"mon_a_one", "mon_a_two"}
@@ -165,7 +166,7 @@ class PlayerSimulationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(FakeBackboardClient.calls), 4)
         self.assertEqual(
             [call["model_name"] for call in FakeBackboardClient.calls],
-            ["gpt-4.1-nano", "jev-latest", "gpt-4.1-nano", "jev-latest"],
+            ["gpt-4.1-nano", JEV_MODEL, "gpt-4.1-nano", JEV_MODEL],
         )
         second_writer_context = json.loads(str(FakeBackboardClient.calls[2]["message"]))
         self.assertNotEqual(second_writer_context["actor"]["name"], first_actor)
