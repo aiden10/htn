@@ -1,0 +1,35 @@
+{
+  "species": "can",
+  "species_key": "can",
+  "name": "Fizzmite",
+  "type": "tide",
+  "stats": {
+    "hp": 95,
+    "attack": 85,
+    "defense": 110,
+    "speed": 110
+  },
+  "moves": [
+    "drizzle_jab",
+    "rinse",
+    "tidal_slam",
+    "pebble_toss"
+  ],
+  "battle_natures": [
+    "metallic",
+    "liquid",
+    "buoyant"
+  ],
+  "flavour": "It rattles wildly when agitated, threatening to burst open in a carbonated spray.",
+  "rarity": "common",
+  "sprite_prompt": "Cylindrical metallic torso with an indented rim, stubby silver legs, small aluminum tab claws, glossy white and red plating, venting frothy bubbling spray from an open top seam.",
+  "first_seen": "2026-09-20T05:40:40",
+  "sightings": 1,
+  "photo_hash": "3ad9d58275b2",
+  "sprite": "can_0.png",
+  "timing": {
+    "vision_s": 15.51,
+    "image_s": 4.42,
+    "total_s": 20.05
+  }
+}

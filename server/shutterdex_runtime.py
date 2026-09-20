@@ -42,7 +42,6 @@ from badge_ui import (
     Clear,
     DexApp,
     HabitatCreature,
-    Leds,
     PokemonCard,
     Rect,
     Screen,
@@ -156,6 +155,7 @@ class ShutterdexRuntime:
         self._latest_delivery_tasks: dict[str, asyncio.Task[None]] = {}
         self._habitat_scroll_task: asyncio.Task[None] | None = None
         self._habitat_panel_delivery_tasks: dict[str, asyncio.Task[None]] = {}
+        self._battle_narrative_delivery_tasks: dict[str, asyncio.Task[None]] = {}
         self._habitat_advance_tasks: dict[str, asyncio.Task[None]] = {}
         self._battle_action_tasks: dict[str, asyncio.Task[None]] = {}
         # A move starts with Writer work before its candidates can be durably
@@ -253,6 +253,7 @@ class ShutterdexRuntime:
         self._delivery_tasks.clear()
         self._latest_delivery_tasks.clear()
         self._habitat_panel_delivery_tasks.clear()
+        self._battle_narrative_delivery_tasks.clear()
         await self.gateway.close()
 
     async def pair_badge(self, *, player_id: str, htn_id: str, app_key: str) -> Badge:
@@ -1039,6 +1040,12 @@ class ShutterdexRuntime:
         if self._habitat_panel_delivery_tasks.get(htn_id) is completed:
             self._habitat_panel_delivery_tasks.pop(htn_id, None)
 
+    def _clear_battle_narrative_delivery_task(
+        self, htn_id: str, completed: asyncio.Task[None]
+    ) -> None:
+        if self._battle_narrative_delivery_tasks.get(htn_id) is completed:
+            self._battle_narrative_delivery_tasks.pop(htn_id, None)
+
     async def begin_capture_loading(self, htn_id: str) -> None:
         """Lock one badge and animate a physical Poké Ball capture overlay."""
 
@@ -1165,7 +1172,6 @@ class ShutterdexRuntime:
         return Screen(
             (
                 Clear("#241F1B"),
-                Leds(("#B3E3A7", "#DECBB5", "#B3E3A7"), brightness=42),
                 Rect(16, 20, 288, 200, "#39302A", radius=16),
                 Rect(34, 43, 252, 9, "#B3E3A7", radius=5),
                 Text(38, 73, "WILD CAPTURE!", "#B3E3A7", size=19, max_width=244),
@@ -1226,31 +1232,27 @@ class ShutterdexRuntime:
     def _capture_loading_screen(phase: int) -> Screen:
         """A deliberately small animation for the one badge that made a capture."""
 
-        title, detail, accent, leds = (
+        title, detail, accent = (
             (
                 "CAPTURE RECEIVED",
                 "Storing the Shutterball snapshot...",
                 "#B3E3A7",
-                ("#B3E3A7", "#DECBB5", "#B3E3A7"),
             ),
             (
                 "IDENTIFYING",
                 "Finding the creature inside...",
                 "#DECBB5",
-                ("#DECBB5", "#B3E3A7", "#DECBB5"),
             ),
             (
                 "SUMMONING",
                 "Giving your new Pokemon a form...",
                 "#B3E3A7",
-                ("#B3E3A7", "#DECBB5", "#B3E3A7"),
             ),
         )[phase % 3]
         dot_count = phase % 3 + 1
         return Screen(
             (
-            Clear("#241F1B"),
-                Leds(leds, brightness=40),
+                Clear("#241F1B"),
                 Rect(18, 25, 284, 190, "#39302A", radius=16),
                 Rect(35, 48, 250, 10, accent, radius=5),
                 Text(38, 78, "SHUTTERBALL", "#FFF8F0", size=13, max_width=244),
@@ -1515,6 +1517,10 @@ class ShutterdexRuntime:
                             await self._redraw_dex_description(
                                 badge.htn_id, self._habitat_scroll_step
                             )
+                        elif session.active_app == "battle":
+                            await self._redraw_battle_narrative(
+                                badge.htn_id, self._habitat_scroll_step
+                            )
                     except (CredentialError, GatewayError, RenderError, ShutterdexRuntimeError):
                         # A reconnect or later scroll frame can redraw it; do
                         # not repeatedly log expected offline failures.
@@ -1653,6 +1659,65 @@ class ShutterdexRuntime:
                 self._habitat_panel_delivery_tasks[htn_id] = delivery
                 delivery.add_done_callback(
                     lambda completed: self._clear_habitat_panel_delivery_task(
+                        htn_id, completed
+                    )
+                )
+
+    async def _redraw_battle_narrative(self, htn_id: str, scroll_step: int) -> None:
+        """Advance only the Director rationale marquee in an active arena.
+
+        A full battle redraw would resend both sprites and all four move tiles
+        every marquee tick. Repaint the narrow narrative panel instead, while
+        refusing to queue another frame behind a slow Wi-Fi delivery.
+        """
+
+        existing_delivery = self._battle_narrative_delivery_tasks.get(htn_id)
+        if existing_delivery is not None:
+            if not existing_delivery.done():
+                return
+            self._battle_narrative_delivery_tasks.pop(htn_id, None)
+
+        async with self._lock_for(htn_id):
+            if htn_id in self._capture_loading_badges:
+                return
+            badge = await self.ensure_registered(htn_id)
+            context = self._context_for_badge(badge)
+            if context.battle is None or context.battle.normalized_phase not in {
+                "active",
+                "resolving",
+            }:
+                return
+            stored = self._ensure_session(badge, context)
+            if stored.active_app != "battle" or not stored.canvas_active:
+                return
+            session = self._session_state(stored, context)
+            screen = self.ui.render(session, context)
+            panel_operations = tuple(
+                operation
+                for operation in screen.operations
+                if (
+                    isinstance(operation, Rect)
+                    and operation.x == 8
+                    and operation.y == 124
+                )
+                or (
+                    isinstance(operation, Text)
+                    and operation.x == 17
+                    and operation.y in {129, 143}
+                )
+            )
+            if not panel_operations:
+                return
+            commands = self.renderer.render(
+                Screen(panel_operations, scene="battle-narrative"),
+                scroll_step=self._relative_scroll_step(htn_id),
+            )
+            tickets = await self._enqueue_frame(badge.htn_id, commands)
+            delivery = self._watch_delivery(badge.htn_id, tickets)
+            if delivery is not None:
+                self._battle_narrative_delivery_tasks[htn_id] = delivery
+                delivery.add_done_callback(
+                    lambda completed: self._clear_battle_narrative_delivery_task(
                         htn_id, completed
                     )
                 )

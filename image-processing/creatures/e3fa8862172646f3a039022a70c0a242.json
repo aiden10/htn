@@ -1,0 +1,36 @@
+{
+  "species": "unknown_artifact",
+  "species_key": "unknown_artifact",
+  "name": "Enigmisp",
+  "type": "ember",
+  "stats": {
+    "hp": 80,
+    "attack": 90,
+    "defense": 70,
+    "speed": 160
+  },
+  "moves": [
+    "cinder_flick",
+    "heat_haze",
+    "static_nip",
+    "overclock"
+  ],
+  "battle_natures": [
+    "buoyant",
+    "heated",
+    "temporal",
+    "flammable"
+  ],
+  "flavour": "It flickers into existence whenever someone stares at an empty wall too long.",
+  "rarity": "rare",
+  "sprite_prompt": "Translucent teardrop-shaped smoke body tapering into swirling ethereal ribbons, glowing pale violet and amber, surrounded by drifting sparks and faint concentric halo rings.",
+  "first_seen": "2026-09-19T22:33:01",
+  "sightings": 4,
+  "photo_hash": "44b8944f8a5a",
+  "sprite": "unknown_artifact_1.png",
+  "timing": {
+    "vision_s": 20.46,
+    "image_s": 0.0,
+    "total_s": 20.46
+  }
+}

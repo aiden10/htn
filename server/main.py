@@ -164,7 +164,12 @@ def process_pokeball_photo(photo_path: Path) -> dict[str, object]:
     POKEBALL_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     POKEBALL_GAME_DATA_DIR.mkdir(parents=True, exist_ok=True)
     creature = generate.process(
-        str(photo_path), str(POKEBALL_OUTPUT_DIR), str(POKEBALL_GAME_DATA_DIR)
+        str(photo_path),
+        str(POKEBALL_OUTPUT_DIR),
+        str(POKEBALL_GAME_DATA_DIR),
+        # A Shutterball photo is an individual capture, even if it is similar
+        # to—or byte-for-byte identical with—an earlier image.
+        cache=False,
     )
     if not isinstance(creature, Mapping):
         raise RuntimeError("Image pipeline returned an invalid Pokemon record.")

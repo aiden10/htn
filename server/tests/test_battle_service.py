@@ -16,11 +16,7 @@ if str(SERVER_ROOT) not in sys.path:
     sys.path.insert(0, str(SERVER_ROOT))
 
 from badge_store import BadgeStore, PokemonRecord, utc_now  # noqa: E402
-from battle_service import (  # noqa: E402
-    BattleDirectorUnavailableError,
-    BattleService,
-    JEV_MODEL,
-)
+from battle_service import BattleService, JEV_MODEL  # noqa: E402
 
 
 class BattleServiceTests(unittest.IsolatedAsyncioTestCase):
@@ -193,7 +189,7 @@ class BattleServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(writer_context["move"], "spark_dash")
         self.assertEqual(writer_context["actor"]["name"], "Coilkit")
 
-    async def test_bad_director_choice_aborts_durable_lock_for_retry(self) -> None:
+    async def test_bad_director_choice_uses_safe_damage_fallback(self) -> None:
         battle = await self._ready_battle()
 
         async def bad_director(request: dict[str, object]) -> object:
@@ -209,15 +205,56 @@ class BattleServiceTests(unittest.IsolatedAsyncioTestCase):
             writer_call=self.writer,
             jev_call=bad_director,
         )
-        with self.assertRaises(BattleDirectorUnavailableError):
-            await self.service.resolve_move(battle.battle_id, self.alice.player_id, 0)
+        result = await self.service.resolve_move(
+            battle.battle_id, self.alice.player_id, 0
+        )
 
-        retriable = self.store.require_battle(battle.battle_id)
-        self.assertEqual(retriable.status, "active")
-        self.assertEqual(retriable.current_player_id, self.alice.player_id)
+        self.assertEqual(result.battle.status, "active")
+        self.assertEqual(result.battle.current_player_id, self.bob.player_id)
+        self.assertEqual(result.selected_candidate.candidate_id, "fallback")
+        self.assertIn("DIRECTOR LINK LOST", result.battle.last_visible_rationale or "")
+        self.assertIn(
+            result.battle.opponent_roster.active_pokemon.current_hp,
+            range(78, 93),
+        )
         turn = self.store.list_battle_turns(battle.battle_id)[0]
-        self.assertEqual(turn.status, "aborted")
-        self.assertIn("failed", turn.abort_reason or "")
+        self.assertEqual(turn.status, "resolved")
+        self.assertEqual(len(turn.candidate_outcomes), 1)
+
+    async def test_malformed_writer_outcome_uses_safe_damage_fallback(self) -> None:
+        """A response like the live validation failures still finishes the turn."""
+
+        async def malformed_writer(request: dict[str, object]) -> object:
+            del request
+            return {
+                "outcomes": [
+                    {
+                        "summary": "Nothing changes.",
+                        "rationale": "The Writer omitted an effect.",
+                        "actor_hp_delta": 0,
+                        "target_hp_delta": 0,
+                        "actor_stat": None,
+                        "actor_stat_delta": 0,
+                        "target_stat": None,
+                        "target_stat_delta": 0,
+                    }
+                ]
+                * 3
+            }
+
+        self.service = BattleService(
+            self.store,
+            writer_call=malformed_writer,
+            jev_call=self.director,
+        )
+        battle = await self._ready_battle()
+        result = await self.service.resolve_move(
+            battle.battle_id, self.alice.player_id, 0
+        )
+
+        self.assertEqual(result.selected_candidate.candidate_id, "fallback")
+        self.assertEqual(result.battle.current_player_id, self.bob.player_id)
+        self.assertIn("DIRECTOR LINK LOST", result.battle.last_visible_rationale or "")
 
     async def test_writer_overkill_is_clipped_instead_of_aborting_the_turn(self) -> None:
         """A model's bad HP arithmetic must not lock both battle badges."""

@@ -602,6 +602,36 @@ class WifiRuntimeTests(unittest.IsolatedAsyncioTestCase):
             player_a.player_id,
         )
 
+        # The Director rationale uses a panel-only marquee redraw. A scroll
+        # tick must not retransmit the two combatant cards or move grid.
+        await self._wait_until(lambda: not self.runtime._delivery_tasks)
+        command_count = len(self.transport.commands)
+        self.runtime._habitat_scroll_step += 8
+        await self.runtime._redraw_battle_narrative(
+            badge_a.htn_id, self.runtime._habitat_scroll_step
+        )
+        await self._wait_until(
+            lambda: any(
+                entry.command.name == "text"
+                and entry.command.payload.get("x") == 17
+                and entry.command.payload.get("y") == 143
+                for entry in self.transport.commands[command_count:]
+            )
+        )
+        narrative_commands = [
+            entry.command for entry in self.transport.commands[command_count:]
+        ]
+        self.assertTrue(
+            any(
+                command.name == "rect"
+                and command.payload.get("x") == 8
+                and command.payload.get("y") == 124
+                for command in narrative_commands
+            )
+        )
+        self.assertNotIn("clear", [command.name for command in narrative_commands])
+        self.assertNotIn("image", [command.name for command in narrative_commands])
+
         # A move submission immediately locks both selected battle badges,
         # including the Writer-drafting interval before SQLite can durably
         # change the battle status to ``resolving``.

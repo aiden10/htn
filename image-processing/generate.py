@@ -130,8 +130,6 @@ def build_vision_prompt(known=()):
             + "\nIf the object is one of these, reuse that exact string."
         )
     return base
-
-
 # ------------------------------------------------------------ validation ---
 # The model is a suggestion engine. Everything it returns passes through here
 # before it becomes real. Assume it will get the stat sum wrong sometimes.
@@ -295,8 +293,9 @@ def validate(raw):
 
 
 # ------------------------------------------------------ species registry ---
-# Same object -> same creature identity, but a bank of sprites to draw from.
-# Judges verify it "understood" the object AND see variety. Both.
+# The registry recognizes recurring object categories and retains a compact
+# sprite bank for them.  It deliberately does *not* make later photos the
+# same creature: every capture gets a fresh profile and a distinct name.
 
 
 def load_registry(path):
@@ -314,45 +313,47 @@ def save_registry(reg, path):
     os.replace(tmp, path)
 
 
-def lock_identity(creature, reg):
-    """First sighting defines the creature. Later ones reuse it. Mutates reg."""
+def _registered_names(reg):
+    """Collect names from both the current and legacy registry layouts."""
+
+    names = set()
+    for entry in reg.values():
+        if not isinstance(entry, dict):
+            continue
+        for name in (entry.get("name"), *(entry.get("names") or ())):
+            if isinstance(name, str) and name.strip():
+                names.add(name.strip().casefold())
+    return names
+
+
+def _unique_name(requested, used_names):
+    """Keep the generated name when possible; suffix only real collisions."""
+
+    base = str(requested).strip()[:24] or "Nameless"
+    if base.casefold() not in used_names:
+        return base
+
+    suffix = 2
+    while True:
+        marker = str(suffix)
+        candidate = f"{base[: 24 - len(marker)]}{marker}"
+        if candidate.casefold() not in used_names:
+            return candidate
+        suffix += 1
+
+
+def register_capture(creature, reg):
+    """Record one individual capture without inheriting an older profile."""
+
+    creature["name"] = _unique_name(creature["name"], _registered_names(reg))
     key = creature["species_key"]
     entry = reg.setdefault(key, {})
-
-    if entry.get("name"):
-        # Normalize historical registry values too.  An earlier development
-        # build could have written more than four fallback tags; one bad
-        # registry row must not poison every later sighting of that species.
-        entry["battle_natures"] = normalise_battle_natures(
-            entry.get("battle_natures"), entry["type"], creature["species"]
-        )
-        creature.update(
-            {
-                "name": entry["name"],
-                "type": entry["type"],
-                "stats": entry["stats"],
-                "moves": entry["moves"],
-                "battle_natures": entry["battle_natures"],
-                "rarity": entry["rarity"],
-                "first_seen": entry.get("first_seen"),
-            }
-        )
-        entry["sightings"] = entry.get("sightings", 1) + 1
-    else:
-        entry.update(
-            {
-                "name": creature["name"],
-                "type": creature["type"],
-                "stats": creature["stats"],
-                "moves": creature["moves"],
-                "battle_natures": creature["battle_natures"],
-                "rarity": creature["rarity"],
-                "first_seen": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                "sightings": 1,
-            }
-        )
-        creature["first_seen"] = entry["first_seen"]
-
+    names = entry.setdefault("names", [])
+    if creature["name"] not in names:
+        names.append(creature["name"])
+    entry.setdefault("first_seen", time.strftime("%Y-%m-%dT%H:%M:%S"))
+    entry["sightings"] = entry.get("sightings", 0) + 1
+    creature["first_seen"] = entry["first_seen"]
     creature["sightings"] = entry["sightings"]
     return entry
 
@@ -436,7 +437,7 @@ def process(photo_path, out_dir, data_dir, cache=True, make_sprite=True):
     creature = describe(photo_path, known=set(reg.keys()))
     t_vision = time.time() - t0
 
-    entry = lock_identity(creature, reg)
+    entry = register_capture(creature, reg)
     print(
         f"{stem}: {creature['name']} ({creature['species']}, "
         f"{creature['type']}) in {t_vision:.1f}s  "

@@ -715,7 +715,8 @@ class HomeApp(BadgeApp):
         }
         operations: list[DrawOperation] = [
             Clear(theme.background),
-            Leds((theme.accent, theme.focus, theme.accent), brightness=40),
+            # Intentionally no LED command on Home: this gives us a clean
+            # battery-power diagnostic while Wi-Fi and Canvas wake together.
             Text(16, 16, "SHUTTERDEX", theme.text, size=26),
             Text(16, 45, "Choose an app", theme.muted, size=14),
         ]
@@ -820,7 +821,6 @@ class DexApp(BadgeApp):
         pokemon = context.pokemon
         operations: list[DrawOperation] = [
             Clear(theme.background),
-            Leds((theme.accent, theme.accent, theme.focus), brightness=35),
             Text(10, 10, "SHUTTERDEX", theme.text, size=23),
             Text(10, 33, f"{len(pokemon)} CAPTURE{'S' if len(pokemon) != 1 else ''}", theme.muted, size=11),
             # Keep this control outside both large panels. The former
@@ -1046,7 +1046,6 @@ class HabitatApp(BadgeApp):
         world_height = world_bottom - world_top
         operations: list[DrawOperation] = [
             Clear(theme.background),
-            Leds((theme.accent, theme.focus, theme.accent), brightness=34),
             Text(10, 10, "HABITAT", theme.text, size=23),
             Text(
                 context.width - 105,
@@ -1396,7 +1395,6 @@ class BattleApp(BadgeApp):
         busy = bool(state.get("busy"))
         operations: list[DrawOperation] = [
             Clear(theme.background),
-            Leds((theme.accent, theme.focus, theme.accent), brightness=34),
             Text(12, 13, "BATTLE", theme.text, size=24),
             Text(12, 42, "WAITING FOR CHALLENGE", theme.muted, size=11),
         ]
@@ -1501,7 +1499,6 @@ class BattleApp(BadgeApp):
             body = battle.notice
         operations: list[DrawOperation] = [
             Clear(theme.background),
-            Leds((theme.focus, theme.accent, theme.focus), brightness=37),
             Text(12, 13, "BATTLE LINK", theme.text, size=24),
             Text(12, 43, heading, theme.focus, size=15, max_width=context.width - 24, scroll=True),
             Rect(12, 68, context.width - 24, 50, theme.surface, radius=9),
@@ -1528,10 +1525,6 @@ class BattleApp(BadgeApp):
             status_color = theme.muted
         operations: list[DrawOperation] = [
             Clear(theme.background),
-            Leds(
-                (theme.director, theme.director, theme.director) if resolving else (theme.accent, theme.focus, theme.accent),
-                brightness=38,
-            ),
             Text(10, 8, "BATTLE", theme.text, size=21),
             Text(context.width - 96, 13, f"TURN {max(1, battle.turn_number)}", theme.muted, size=11, max_width=86, align="right"),
             Text(10, 32, status, status_color, size=10, max_width=context.width - 20, scroll=True),
@@ -1587,7 +1580,6 @@ class BattleApp(BadgeApp):
         )
         operations: list[DrawOperation] = [
             Clear(theme.background),
-            Leds((theme.muted, theme.focus, theme.muted), brightness=28),
             Text(12, 13, "BATTLE", theme.text, size=24),
             Text(
                 12,
@@ -1621,7 +1613,6 @@ class BattleApp(BadgeApp):
         body = battle.end_reason or battle.notice or battle.rationale or "The shared battle has ended."
         operations: list[DrawOperation] = [
             Clear(theme.background),
-            Leds((colour, colour, colour), brightness=34),
             Text(12, 13, "BATTLE", theme.text, size=24),
             Rect(12, 63, context.width - 24, 105, theme.surface, radius=10),
             Text(25, 81, heading, colour, size=18, max_width=context.width - 50, scroll=True),

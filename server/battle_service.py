@@ -22,6 +22,7 @@ import inspect
 import json
 import logging
 import os
+import secrets
 from typing import Any, TypeAlias
 
 try:
@@ -58,6 +59,8 @@ MAX_OUTCOME_SUMMARY = 180
 MAX_VISIBLE_RATIONALE = 320
 MAX_STAT_STAGE = 6
 _STAT_NAMES: frozenset[str] = frozenset({"attack", "defense", "speed"})
+FALLBACK_DAMAGE_MIN_PERCENT = 8
+FALLBACK_DAMAGE_MAX_PERCENT = 22
 
 
 WRITER_SYSTEM_PROMPT = """You are the Shutterdex Battle Writer.
@@ -402,10 +405,10 @@ class BattleService:
         A submitted move is claimed durably *before* Writer starts.  The
         normal player clock is then replaced by a bounded resolution lease,
         so a legal selection cannot time out while Writer/Director run.  Once
-        Writer's three server-shaped candidates are persisted, any Director
-        failure, timeout, cancellation, or deterministic application failure
-        aborts the attempt, restores the same active turn with a fresh retry
-        clock, and preserves the rejected attempt for audit/retry.
+        Writer/Director failures use a small server-generated fallback hit so
+        a malformed model response cannot strand a player on their turn.
+        Cancellation and durable-state failures still abort safely and restore
+        the same active turn with a fresh retry clock.
         """
 
         self._validate_move_index(move_index)
@@ -461,13 +464,35 @@ class BattleService:
                 # This await remains inside the cancellation-safe try block.
                 await self._notify_resolution_started(locked_battle, turn)
 
-                candidates = await self._writer_candidates(
-                    battle=locked_battle,
-                    player_id=player_id,
-                    actor=actor,
-                    target=target,
-                    move_id=move_id,
-                )
+                try:
+                    candidates = await self._writer_candidates(
+                        battle=locked_battle,
+                        player_id=player_id,
+                        actor=actor,
+                        target=target,
+                        move_id=move_id,
+                    )
+                    # Keep candidates in memory until the Director makes its
+                    # choice. If either model rejects its tightly constrained
+                    # task, the same resolving turn can instead persist one
+                    # valid fallback candidate and finish normally.
+                    selected_candidate = await self._jev_choice(
+                        battle=locked_battle,
+                        turn=turn,
+                        actor=actor,
+                        target=target,
+                        candidates=candidates,
+                    )
+                except (BattleWriterUnavailableError, BattleDirectorUnavailableError) as exc:
+                    LOGGER.warning(
+                        "Battle model resolution fell back to safe damage (%s)",
+                        type(exc).__name__,
+                    )
+                    selected_candidate = self._fallback_candidate(
+                        actor=actor, target=target, move_id=move_id
+                    )
+                    candidates = (selected_candidate,)
+
                 turn = await asyncio.to_thread(
                     self.store.set_battle_resolution_candidates,
                     battle_id,
@@ -476,14 +501,6 @@ class BattleService:
                     candidate_outcomes=candidates,
                     expected_revision=locked_battle.revision,
                     updated_at=self._now(),
-                )
-
-                selected_candidate = await self._jev_choice(
-                    battle=locked_battle,
-                    turn=turn,
-                    actor=actor,
-                    target=target,
-                    candidates=candidates,
                 )
                 challenger_roster, opponent_roster = self._apply_candidate(
                     locked_battle, player_id, selected_candidate
@@ -690,6 +707,40 @@ class BattleService:
         return max(
             self.turn_timeout_seconds,
             (self.model_timeout_seconds * 2) + 10,
+        )
+
+    @staticmethod
+    def _fallback_candidate(
+        *,
+        actor: BattlePokemonSnapshot,
+        target: BattlePokemonSnapshot,
+        move_id: str,
+    ) -> BattleCandidateOutcome:
+        """Resolve a model failure as one bounded, visible damage outcome.
+
+        The fallback deliberately changes only target HP. It uses no generated
+        text, no interpretation of natures, and no mutable move data, so the
+        normal store validation and replay path remain exactly the same.
+        """
+
+        percentage = FALLBACK_DAMAGE_MIN_PERCENT + secrets.randbelow(
+            FALLBACK_DAMAGE_MAX_PERCENT - FALLBACK_DAMAGE_MIN_PERCENT + 1
+        )
+        damage = max(1, (target.max_hp * percentage + 99) // 100)
+        damage = min(target.current_hp, damage)
+        move_name = move_id.replace("_", " ").upper()
+        return BattleCandidateOutcome(
+            candidate_id="fallback",
+            summary="Fallback impact.",
+            rationale=(
+                f"DIRECTOR LINK LOST. {move_name} lands for {percentage}% fallback damage."
+            ),
+            actor_hp_delta=0,
+            target_hp_delta=-damage,
+            actor_stat=None,
+            actor_stat_delta=0,
+            target_stat=None,
+            target_stat_delta=0,
         )
 
     # -- Backboard calls and structural validation ---------------------

@@ -1,0 +1,35 @@
+{
+  "species": "unknown_artifact",
+  "species_key": "unknown_artifact",
+  "name": "Voltwisp",
+  "type": "circuit",
+  "stats": {
+    "hp": 75,
+    "attack": 85,
+    "defense": 60,
+    "speed": 180
+  },
+  "moves": [
+    "static_nip",
+    "overclock",
+    "arc_lash",
+    "heat_haze"
+  ],
+  "battle_natures": [
+    "buoyant",
+    "conductive",
+    "magnetic"
+  ],
+  "flavour": "It drifts between electrical sockets, quietly nibbling on stray electromagnetic interference.",
+  "rarity": "rare",
+  "sprite_prompt": "Translucent teardrop-shaped ethereal body of pale lavender mist, crowned with crackling golden plasma filaments, trailing three wispy tendrils tipped with tiny glowing orbs.",
+  "first_seen": "2026-09-19T22:33:01",
+  "sightings": 5,
+  "photo_hash": "98060646c04d",
+  "sprite": "unknown_artifact_1.png",
+  "timing": {
+    "vision_s": 14.12,
+    "image_s": 0.0,
+    "total_s": 14.12
+  }
+}
