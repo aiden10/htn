@@ -1,0 +1,30 @@
+{
+  "species": "roof",
+  "species_key": "roof",
+  "name": "Canopace",
+  "type": "stone",
+  "stats": {
+    "hp": 110,
+    "attack": 50,
+    "defense": 160,
+    "speed": 80
+  },
+  "moves": [
+    "bedrock_stance",
+    "boulder_drop",
+    "grind_down",
+    "heat_haze"
+  ],
+  "flavour": "It shelters smaller creatures from rain, but charges rent in shiny pebbles.",
+  "rarity": "uncommon",
+  "sprite_prompt": "A wide semicircular armored shell with diagonal ribbing, slate grey and terracotta tones, supported by sturdy segmented pillar legs and a smooth curved crest.",
+  "first_seen": "2026-09-19T22:40:01",
+  "sightings": 1,
+  "photo_hash": "9bb49484bda6",
+  "sprite": "roof_0.png",
+  "timing": {
+    "vision_s": 13.21,
+    "image_s": 4.28,
+    "total_s": 17.6
+  }
+}

@@ -33,7 +33,9 @@ from badge_ui import (
     BadgeUiContext,
     Button,
     ButtonEvent,
+    Clear,
     HabitatCreature,
+    Leds,
     PokemonCard,
     Rect,
     Screen,
@@ -89,6 +91,7 @@ class ShutterdexRuntime:
     # larger jump still moves the text four times faster than the original.
     HABITAT_SCROLL_INTERVAL_SECONDS = 2.0
     HABITAT_SCROLL_CHARACTERS_PER_TICK = 8
+    CAPTURE_LOADING_INTERVAL_SECONDS = 1.25
     # Writer and Jev calls are serial, but a badge should never remain on a
     # permanent "working" screen if a provider connection stalls.
     HABITAT_ADVANCE_TIMEOUT_SECONDS = 45.0
@@ -117,6 +120,8 @@ class ShutterdexRuntime:
         self._habitat_scroll_task: asyncio.Task[None] | None = None
         self._habitat_panel_delivery_tasks: dict[str, asyncio.Task[None]] = {}
         self._habitat_advance_tasks: dict[str, asyncio.Task[None]] = {}
+        self._capture_loading_badges: set[str] = set()
+        self._capture_loading_tasks: dict[str, asyncio.Task[None]] = {}
         self._habitat_scroll_step = 0
         self._started = False
 
@@ -157,6 +162,12 @@ class ShutterdexRuntime:
         if self._habitat_advance_tasks:
             await asyncio.gather(*self._habitat_advance_tasks.values(), return_exceptions=True)
         self._habitat_advance_tasks.clear()
+        for task in tuple(self._capture_loading_tasks.values()):
+            task.cancel()
+        if self._capture_loading_tasks:
+            await asyncio.gather(*self._capture_loading_tasks.values(), return_exceptions=True)
+        self._capture_loading_tasks.clear()
+        self._capture_loading_badges.clear()
         for task in tuple(self._delivery_tasks):
             task.cancel()
         if self._delivery_tasks:
@@ -249,6 +260,11 @@ class ShutterdexRuntime:
 
         async with self._lock_for(htn_id):
             badge = await self.ensure_registered(htn_id)
+            if htn_id in self._capture_loading_badges:
+                # A physical Poké Ball capture owns this badge's screen until
+                # its image has been processed and persisted. Other badges
+                # remain completely independent and keep accepting events.
+                return None
             context = self._context_for_badge(badge)
             stored = self._ensure_session(badge, context)
             session = self._session_state(stored, context)
@@ -347,7 +363,11 @@ class ShutterdexRuntime:
                     event_count=len(context.events),
                     show_latest_event=succeeded,
                 )
-                if stored.active_app != "habitat" or not stored.canvas_active:
+                if (
+                    htn_id in self._capture_loading_badges
+                    or stored.active_app != "habitat"
+                    or not stored.canvas_active
+                ):
                     self.store.save_session(
                         badge.badge_id,
                         active_app=next_session.active_app,
@@ -417,6 +437,126 @@ class ShutterdexRuntime:
         if self._habitat_panel_delivery_tasks.get(htn_id) is completed:
             self._habitat_panel_delivery_tasks.pop(htn_id, None)
 
+    async def begin_capture_loading(self, htn_id: str) -> None:
+        """Lock one badge and animate a physical Poké Ball capture overlay."""
+
+        current = self._capture_loading_tasks.get(htn_id)
+        if current is not None and not current.done():
+            return
+        self._capture_loading_tasks.pop(htn_id, None)
+        self._capture_loading_badges.add(htn_id)
+        task = asyncio.create_task(
+            self._animate_capture_loading(htn_id),
+            name=f"shutterdex-capture-loading-{htn_id}",
+        )
+        self._capture_loading_tasks[htn_id] = task
+        task.add_done_callback(
+            lambda completed: self._clear_capture_loading_task(htn_id, completed)
+        )
+
+    async def end_capture_loading(self, htn_id: str, *, restore: bool) -> None:
+        """Unlock a capture badge and optionally redraw its saved app screen."""
+
+        task = self._capture_loading_tasks.pop(htn_id, None)
+        self._capture_loading_badges.discard(htn_id)
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        if not restore:
+            return
+        try:
+            async with self._lock_for(htn_id):
+                badge = await self.ensure_registered(htn_id)
+                await self._render_current_locked(
+                    badge, force=True, scroll_step=self._habitat_scroll_step
+                )
+        except (CredentialError, GatewayError, RenderError, ShutterdexRuntimeError) as exc:
+            LOGGER.warning("Could not restore capture badge %s: %s", htn_id, exc)
+
+    def _clear_capture_loading_task(
+        self, htn_id: str, completed: asyncio.Task[None]
+    ) -> None:
+        if self._capture_loading_tasks.get(htn_id) is completed:
+            self._capture_loading_tasks.pop(htn_id, None)
+        # Rendering a decorative phase can fail independently of the camera
+        # pipeline. Do not silently re-enable controls in that case: only the
+        # capture job (or shutdown) is allowed to release this badge.
+
+    async def _animate_capture_loading(self, htn_id: str) -> None:
+        """Render the three capture phases without blocking any other badge."""
+
+        phase = 0
+        try:
+            while htn_id in self._capture_loading_badges:
+                tickets = await self._queue_capture_loading_frame(htn_id, phase)
+                for ticket in tickets:
+                    try:
+                        await ticket.wait()
+                    except GatewayError:
+                        # The next phase can retry after a normal badge
+                        # reconnect; never let one offline badge stop others.
+                        break
+                phase = (phase + 1) % 3
+                await asyncio.sleep(self.CAPTURE_LOADING_INTERVAL_SECONDS)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            LOGGER.warning("Capture loading animation failed for badge %s: %s", htn_id, exc)
+
+    async def _queue_capture_loading_frame(
+        self, htn_id: str, phase: int
+    ) -> tuple[CommandTicket, ...]:
+        async with self._lock_for(htn_id):
+            if htn_id not in self._capture_loading_badges:
+                return ()
+            badge = await self.ensure_registered(htn_id)
+            stored = self._ensure_session(badge, self._context_for_badge(badge))
+            if not stored.canvas_active:
+                await self._render_current_locked(
+                    badge, force=True, scroll_step=self._habitat_scroll_step
+                )
+            commands = self.renderer.render(self._capture_loading_screen(phase))
+            return await self._enqueue_frame(htn_id, commands)
+
+    @staticmethod
+    def _capture_loading_screen(phase: int) -> Screen:
+        """A deliberately small animation for the one badge that made a capture."""
+
+        title, detail, accent, leds = (
+            (
+                "CAPTURE RECEIVED",
+                "Storing the Poké Ball snapshot...",
+                "#5BC0EB",
+                ("#5BC0EB", "#5BC0EB", "#1B4965"),
+            ),
+            (
+                "IDENTIFYING",
+                "Finding the creature inside...",
+                "#F8C94A",
+                ("#F8C94A", "#1B4965", "#F8C94A"),
+            ),
+            (
+                "SUMMONING",
+                "Giving your new Pokémon a form...",
+                "#C77DFF",
+                ("#C77DFF", "#C77DFF", "#F8C94A"),
+            ),
+        )[phase % 3]
+        dot_count = phase % 3 + 1
+        return Screen(
+            (
+                Clear("#101827"),
+                Leds(leds, brightness=40),
+                Rect(18, 25, 284, 190, "#1D2B45", radius=16),
+                Rect(35, 48, 250, 10, accent, radius=5),
+                Text(38, 78, "POKÉ BALL", "#EAF6FF", size=13, max_width=244),
+                Text(38, 108, title, accent, size=20, max_width=244),
+                Text(38, 142, detail, "#C9D6E6", size=12, max_width=244, scroll=True),
+                Text(38, 181, "PLEASE WAIT" + "." * dot_count, "#8FA4BE", size=11, max_width=244),
+            ),
+            scene="capture-loading",
+        )
+
     async def refresh_badge(
         self,
         htn_id: str,
@@ -427,6 +567,11 @@ class ShutterdexRuntime:
         """Refresh fresh collection/world data without changing selection."""
 
         async with self._lock_for(htn_id):
+            # A capture overlay is intentionally authoritative until the
+            # image job completes. Background collection refreshes and
+            # reconnect replays must not paint over it.
+            if htn_id in self._capture_loading_badges:
+                return None
             badge = await self.ensure_registered(htn_id)
             stored = self._ensure_session(badge, self._context_for_badge(badge))
             if only_active_app is not None and stored.active_app != only_active_app:
@@ -460,7 +605,7 @@ class ShutterdexRuntime:
         return tuple(rendered)
 
     async def _scroll_habitat_labels(self) -> None:
-        """Redraw active Habitat labels at a safe low rate for marquee text."""
+        """Redraw active Habitat and Dex marquee fields at a safe low rate."""
 
         try:
             while True:
@@ -468,16 +613,17 @@ class ShutterdexRuntime:
                 self._habitat_scroll_step += self.HABITAT_SCROLL_CHARACTERS_PER_TICK
                 for badge in self.store.list_badges():
                     session = self.store.get_session(badge.badge_id)
-                    if (
-                        session is None
-                        or session.active_app != "habitat"
-                        or not session.canvas_active
-                    ):
+                    if session is None or not session.canvas_active:
                         continue
                     try:
-                        await self._redraw_habitat_panel(
-                            badge.htn_id, self._habitat_scroll_step
-                        )
+                        if session.active_app == "habitat":
+                            await self._redraw_habitat_panel(
+                                badge.htn_id, self._habitat_scroll_step
+                            )
+                        elif session.active_app == "dex":
+                            await self._redraw_dex_description(
+                                badge.htn_id, self._habitat_scroll_step
+                            )
                     except (CredentialError, GatewayError, RenderError, ShutterdexRuntimeError):
                         # A reconnect or later scroll frame can redraw it; do
                         # not repeatedly log expected offline failures.
@@ -503,6 +649,10 @@ class ShutterdexRuntime:
             self._habitat_panel_delivery_tasks.pop(htn_id, None)
 
         async with self._lock_for(htn_id):
+            if htn_id in self._capture_loading_badges:
+                # The current world may update during a camera job, but a
+                # marquee repaint would replace the capture overlay.
+                return
             badge = await self.ensure_registered(htn_id)
             context = self._context_for_badge(badge)
             stored = self._ensure_session(badge, context)
@@ -526,6 +676,84 @@ class ShutterdexRuntime:
             commands = self.renderer.render(
                 Screen(panel_operations, scene="habitat-panel"),
                 scroll_step=scroll_step,
+            )
+            tickets = await self._enqueue_frame(badge.htn_id, commands)
+            delivery = self._watch_delivery(badge.htn_id, tickets)
+            if delivery is not None:
+                self._habitat_panel_delivery_tasks[htn_id] = delivery
+                delivery.add_done_callback(
+                    lambda completed: self._clear_habitat_panel_delivery_task(
+                        htn_id, completed
+                    )
+                )
+
+    async def _redraw_dex_description(self, htn_id: str, scroll_step: int) -> None:
+        """Advance only the selected Dex entry's description marquee.
+
+        The Dex scene includes sprites and a grid, so repainting the complete
+        scene for a single moving sentence is unnecessary visual churn. This
+        deliberately clears and redraws only the description region.
+        """
+
+        existing_delivery = self._habitat_panel_delivery_tasks.get(htn_id)
+        if existing_delivery is not None:
+            if not existing_delivery.done():
+                return
+            self._habitat_panel_delivery_tasks.pop(htn_id, None)
+
+        async with self._lock_for(htn_id):
+            if htn_id in self._capture_loading_badges:
+                return
+            badge = await self.ensure_registered(htn_id)
+            context = self._context_for_badge(badge)
+            stored = self._ensure_session(badge, context)
+            if (
+                stored.active_app != "dex"
+                or not stored.canvas_active
+                or not context.pokemon
+            ):
+                return
+            session = self._session_state(stored, context)
+            selected = min(
+                max(0, int(session.app_states.get("dex", {}).get("selected", 0))),
+                len(context.pokemon) - 1,
+            )
+            flavour = context.pokemon[selected].flavour
+            screen = self.ui.render(session, context)
+            description = next(
+                (
+                    operation
+                    for operation in screen.operations
+                    if isinstance(operation, Text) and operation.text == flavour
+                ),
+                None,
+            )
+            panel = next(
+                (
+                    operation
+                    for operation in screen.operations
+                    if isinstance(operation, Rect) and operation.x == 164 and operation.y == 48
+                ),
+                None,
+            )
+            if description is None or panel is None:
+                return
+            # The renderer currently emits one marquee line at a time. Leave
+            # enough height for a future multi-line description without
+            # touching the Stats/Profile label above it.
+            clear_width = (description.max_width or 0) + 4
+            operations = (
+                Rect(
+                    description.x - 2,
+                    description.y - 2,
+                    clear_width,
+                    42,
+                    panel.fill,
+                ),
+                description,
+            )
+            commands = self.renderer.render(
+                Screen(operations, scene="dex-description"), scroll_step=scroll_step
             )
             tickets = await self._enqueue_frame(badge.htn_id, commands)
             delivery = self._watch_delivery(badge.htn_id, tickets)

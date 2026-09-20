@@ -8,6 +8,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import sys
 from uuid import uuid4
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile, status
@@ -16,7 +17,7 @@ from dotenv import load_dotenv
 
 from badge_export import badge_snapshot_text
 from badge_renderer import ScreenRenderer, SpriteImageResolver
-from badge_store import BadgeStore
+from badge_store import Badge, BadgeStore, pokemon_from_dict
 from badge_ui import BadgeUi
 from credential_vault import CredentialError, FernetCredentialVault, UnavailableCredentialVault
 from htn_gateway import HTNBadgeGateway, HTNServiceWebSocketTransport, InMemoryBadgeTransport
@@ -29,11 +30,17 @@ from sprite_assets import SpriteError, SpriteStore
 
 
 SERVER_DIR = Path(__file__).resolve().parent
+PROJECT_DIR = SERVER_DIR.parent
+IMAGE_PROCESSING_DIR = PROJECT_DIR / "image-processing"
 load_dotenv(SERVER_DIR / ".env")
 DATA_DIR = SERVER_DIR / "data"
 UPLOAD_DIR = SERVER_DIR / "uploads"
 SPRITE_DIR = DATA_DIR / "sprites"
+POKEBALL_CAPTURE_DIR = IMAGE_PROCESSING_DIR / "captures"
+POKEBALL_OUTPUT_DIR = IMAGE_PROCESSING_DIR / "creatures"
+POKEBALL_GAME_DATA_DIR = IMAGE_PROCESSING_DIR / "gamedata"
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
+MAX_POKEBALL_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_SPRITE_BYTES = 5 * 1024 * 1024
 ALLOWED_IMAGE_TYPES = {
     "image/jpeg": ".jpg",
@@ -119,6 +126,177 @@ def configured_player_id(htn_id: str) -> str:
     return f"configured_{digest}"
 
 
+def configured_pokeball_badge_id() -> str:
+    """Return the one badge currently receiving physical Poké Ball captures."""
+
+    htn_id = os.getenv("POKEBALL_BADGE_ID", "").strip()
+    if not htn_id:
+        raise RuntimeError(
+            "POKEBALL_BADGE_ID must name the connected badge receiving camera captures."
+        )
+    return htn_id
+
+
+def pokeball_capture_badge(app: FastAPI) -> Badge:
+    """Resolve the configured capture badge and its current player owner."""
+
+    badge = app.state.shutterdex_store.require_badge_by_htn_id(
+        configured_pokeball_badge_id()
+    )
+    if badge.player_id is None:
+        raise RuntimeError("POKEBALL_BADGE_ID must refer to a badge assigned to a player.")
+    return badge
+
+
+def process_pokeball_photo(photo_path: Path) -> dict[str, object]:
+    """Run the proven image-processing pipeline without importing it at boot."""
+
+    module_path = str(IMAGE_PROCESSING_DIR)
+    if module_path not in sys.path:
+        sys.path.insert(0, module_path)
+    import generate  # Imported lazily: it requires the vision/image dependencies.
+
+    POKEBALL_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    POKEBALL_GAME_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    creature = generate.process(
+        str(photo_path), str(POKEBALL_OUTPUT_DIR), str(POKEBALL_GAME_DATA_DIR)
+    )
+    if not isinstance(creature, Mapping):
+        raise RuntimeError("Image pipeline returned an invalid Pokemon record.")
+    return dict(creature)
+
+
+def pokeball_profile(creature: Mapping[str, object]) -> dict[str, object]:
+    """Project image-pipeline output onto the durable Pokemon schema."""
+
+    fields = (
+        "name",
+        "species",
+        "type",
+        "stats",
+        "moves",
+        "flavour",
+        "sprite_prompt",
+        "rarity",
+    )
+    missing = [field for field in fields if field not in creature]
+    if missing:
+        raise RuntimeError(
+            "Image pipeline did not provide required fields: " + ", ".join(missing)
+        )
+    # Pydantic gives camera-originated model output the same validation as a
+    # dashboard/API-created Pokemon before the SQLite record is constructed.
+    return Pokemon.model_validate({field: creature[field] for field in fields}).model_dump(
+        by_alias=True, mode="json"
+    )
+
+
+def generated_sprite_path(creature: Mapping[str, object]) -> Path | None:
+    """Resolve only the generated sprite's filename inside the safe data bank."""
+
+    name = creature.get("sprite")
+    if not isinstance(name, str) or not name.strip():
+        return None
+    path = (POKEBALL_GAME_DATA_DIR / Path(name).name).resolve()
+    try:
+        path.relative_to(POKEBALL_GAME_DATA_DIR.resolve())
+    except ValueError as exc:
+        raise RuntimeError("Generated sprite path escaped image-processing data.") from exc
+    if not path.is_file():
+        raise RuntimeError("Image pipeline reported a missing sprite.")
+    return path
+
+
+async def store_pokeball_creature(
+    app: FastAPI,
+    *,
+    capture_id: str,
+    capture_badge: Badge,
+    creature: Mapping[str, object],
+) -> None:
+    """Persist one generated capture, attach its sprite, and refresh its owner."""
+
+    assert capture_badge.player_id is not None
+    profile = pokeball_profile(creature)
+    profile["metadata"] = {
+        "source": "pokeball-camera",
+        "capture_id": capture_id,
+    }
+    record = pokemon_from_dict(
+        profile,
+        owner_player_id=capture_badge.player_id,
+        captured_by_badge_id=capture_badge.badge_id,
+    )
+    created = await asyncio.to_thread(app.state.shutterdex_store.create_pokemon, record)
+
+    sprite = generated_sprite_path(creature)
+    if sprite is not None:
+        image_bytes = await asyncio.to_thread(sprite.read_bytes)
+        sprite_key = await asyncio.to_thread(
+            app.state.sprites.save_png, created.pokemon_id, image_bytes
+        )
+        await asyncio.to_thread(
+            app.state.shutterdex_store.update_pokemon_sprite,
+            created.pokemon_id,
+            sprite_key,
+            expected_owner_player_id=capture_badge.player_id,
+        )
+
+    await app.state.shutterdex_runtime.refresh_player(capture_badge.player_id)
+    LOGGER.info(
+        "Poké Ball capture %s stored as %s for badge %s.",
+        capture_id,
+        created.pokemon_id,
+        capture_badge.htn_id,
+    )
+
+
+async def process_and_store_pokeball_capture(
+    app: FastAPI, *, capture_id: str, photo_path: Path, capture_badge: Badge
+) -> None:
+    """Serialize one camera's generation jobs, then add the result to its Dex.
+
+    The image pipeline is CPU/network-bound and may take a while, so it runs
+    in this task rather than in the request handler. The one badge paired to
+    the physical Poké Ball gets an animated, input-locked overlay for exactly
+    the duration of its own queued capture. This deliberately does not lock
+    the gateway, event loop, or any other player's badge.
+    """
+
+    loading_started = False
+    try:
+        async with app.state.pokeball_generation_lock:
+            await app.state.shutterdex_runtime.begin_capture_loading(
+                capture_badge.htn_id
+            )
+            loading_started = True
+            creature = await asyncio.to_thread(process_pokeball_photo, photo_path)
+            await store_pokeball_creature(
+                app,
+                capture_id=capture_id,
+                capture_badge=capture_badge,
+                creature=creature,
+            )
+            # ``refresh_player`` deliberately leaves the capture overlay in
+            # place. Restore once the new Pokémon is durably saved so the
+            # first normal frame already contains the updated Dex/Habitat.
+            await app.state.shutterdex_runtime.end_capture_loading(
+                capture_badge.htn_id, restore=True
+            )
+            loading_started = False
+    except Exception:
+        # The source photo remains in captures/ for diagnosis/replay. Avoid
+        # logging its image data or any badge credential.
+        LOGGER.exception("Poké Ball capture %s could not be processed.", capture_id)
+    finally:
+        if loading_started:
+            # A processing error must never leave the physical capture badge
+            # permanently locked behind the loading screen.
+            await app.state.shutterdex_runtime.end_capture_loading(
+                capture_badge.htn_id, restore=True
+            )
+
+
 async def start_configured_badges(app: FastAPI) -> None:
     """Create, pair, connect, and launch every badge declared in ``.env``."""
 
@@ -175,6 +353,9 @@ async def lifespan(app: FastAPI):
     """Set up legacy serial services and the isolated HTN OS app runtime."""
 
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    POKEBALL_CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
+    POKEBALL_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    POKEBALL_GAME_DATA_DIR.mkdir(parents=True, exist_ok=True)
     mirror_setting = os.getenv("BADGE_INBOX_DIR", "").strip()
     app.state.simulation = SimulationService(
         WorldStore(DATA_DIR / "world.sqlite3"),
@@ -204,11 +385,20 @@ async def lifespan(app: FastAPI):
         on_habitat_advance=app.state.player_simulation.tick,
     )
     app.state.configured_badge_retry_tasks = []
+    app.state.pokeball_generation_lock = asyncio.Lock()
+    app.state.pokeball_capture_tasks = set()
     await app.state.shutterdex_runtime.start()
     await start_configured_badges(app)
     try:
         yield
     finally:
+        for task in tuple(app.state.pokeball_capture_tasks):
+            task.cancel()
+        if app.state.pokeball_capture_tasks:
+            await asyncio.gather(
+                *app.state.pokeball_capture_tasks, return_exceptions=True
+            )
+        app.state.pokeball_capture_tasks.clear()
         for task in app.state.configured_badge_retry_tasks:
             task.cancel()
         await asyncio.gather(
@@ -291,6 +481,7 @@ async def root() -> dict[str, str]:
     return {
         "service": "pokemon-generator-and-simulation",
         "upload_endpoint": "POST /pokemon",
+        "pokeball_upload_endpoint": "POST /upload (raw JPEG)",
         "badge_export": "GET /badge/inbox",
     }
 
@@ -298,6 +489,83 @@ async def root() -> dict[str, str]:
 @app.get("/health", tags=["health"])
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.post("/upload", include_in_schema=False, status_code=status.HTTP_202_ACCEPTED)
+@app.post("/pokeball/upload", status_code=status.HTTP_202_ACCEPTED, tags=["pokeball"])
+async def receive_pokeball_camera_image(request: Request) -> dict[str, object]:
+    """Accept the ESP32 camera's raw JPEG and queue one player-owned capture.
+
+    The branch's camera already sends an ``image/jpeg`` request body to
+    ``/upload``. This preserves that wire format while moving the resulting
+    Pokemon into the Wi-Fi Shutterdex SQLite store instead of a separate
+    card-rendering process.
+    """
+
+    content_type = request.headers.get("content-type", "").split(";", 1)[0].lower()
+    if content_type and content_type not in {"image/jpeg", "application/octet-stream"}:
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail="Poké Ball uploads must be raw JPEG data.",
+        )
+    try:
+        capture_badge = pokeball_capture_badge(request.app)
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="POKEBALL_BADGE_ID is not paired to a player.",
+        ) from exc
+
+    capture_id = uuid4().hex
+    destination = POKEBALL_CAPTURE_DIR / f"{capture_id}.jpg"
+    total_bytes = 0
+    try:
+        with destination.open("wb") as output:
+            async for chunk in request.stream():
+                total_bytes += len(chunk)
+                if total_bytes > MAX_POKEBALL_IMAGE_BYTES:
+                    raise HTTPException(
+                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                        detail="Poké Ball image must be 8 MiB or smaller.",
+                    )
+                output.write(chunk)
+        image_bytes = await asyncio.to_thread(destination.read_bytes)
+        if not image_bytes.startswith(b"\xff\xd8"):
+            raise HTTPException(
+                status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+                detail="Poké Ball upload was not a JPEG image.",
+            )
+    except HTTPException:
+        destination.unlink(missing_ok=True)
+        raise
+    except OSError as exc:
+        destination.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unable to save Poké Ball image.",
+        ) from exc
+
+    task = asyncio.create_task(
+        process_and_store_pokeball_capture(
+            request.app,
+            capture_id=capture_id,
+            photo_path=destination,
+            capture_badge=capture_badge,
+        ),
+        name=f"shutterdex-pokeball-{capture_id}",
+    )
+    request.app.state.pokeball_capture_tasks.add(task)
+    task.add_done_callback(request.app.state.pokeball_capture_tasks.discard)
+    return {
+        "capture_id": capture_id,
+        "status": "accepted",
+        "target_badge": capture_badge.htn_id,
+        "next_step": "The image is generating a Pokemon for this badge's player.",
+    }
 
 
 @app.get("/bridge", include_in_schema=False)

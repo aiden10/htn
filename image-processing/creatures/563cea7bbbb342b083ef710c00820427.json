@@ -1,0 +1,30 @@
+{
+  "species": "unknown artifact",
+  "species_key": "unknown_artifact",
+  "name": "Foamwisp",
+  "type": "tide",
+  "stats": {
+    "hp": 85,
+    "attack": 75,
+    "defense": 90,
+    "speed": 150
+  },
+  "moves": [
+    "drizzle_jab",
+    "undertow",
+    "tidal_slam",
+    "rinse"
+  ],
+  "flavour": "A floating spirit of sea spray that dissolves whenever anyone tries to hug it.",
+  "rarity": "rare",
+  "sprite_prompt": "Teardrop shaped swirling vapor body of aquamarine and foamy white, with trailing mist tendrils and tiny translucent water droplets orbiting a glowing sea green core.",
+  "first_seen": "2026-09-19T22:33:01",
+  "sightings": 1,
+  "photo_hash": "544c560ce6a7",
+  "sprite": "unknown_artifact_0.png",
+  "timing": {
+    "vision_s": 29.11,
+    "image_s": 4.37,
+    "total_s": 33.62
+  }
+}

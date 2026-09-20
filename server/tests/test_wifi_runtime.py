@@ -226,6 +226,42 @@ class WifiRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([card.name for card in context_a.pokemon], ["Aster"])
         self.assertNotIn("Boulder", [card.name for card in context_a.pokemon])
 
+        # The Dex description is a partial marquee redraw: it advances the
+        # flavour text without repainting the collection grid or its sprite.
+        await self._wait_until(lambda: not self.runtime._delivery_tasks)
+        command_count = len(self.transport.commands)
+        await self.runtime._redraw_dex_description(badge_a.htn_id, scroll_step=8)
+        await self._wait_until(
+            lambda: any(
+                entry.command.name == "text"
+                and entry.command.payload.get("x") == 171
+                and entry.command.payload.get("y") == 186
+                for entry in self.transport.commands[command_count:]
+            )
+        )
+        marquee_commands = [
+            entry.command for entry in self.transport.commands[command_count:]
+        ]
+        self.assertTrue(
+            any(
+                command.name == "rect"
+                and command.payload.get("x") == 169
+                and command.payload.get("y") == 184
+                for command in marquee_commands
+            )
+        )
+        description_command = next(
+            command
+            for command in marquee_commands
+            if command.name == "text"
+            and command.payload.get("x") == 171
+            and command.payload.get("y") == 186
+        )
+        self.assertNotEqual(
+            description_command.payload["text"],
+            "Exists only to verify badge isolation.",
+        )
+
     async def test_gateway_button_event_only_changes_its_origin_badge(self) -> None:
         player_a = self.store.create_player("Player A", player_id="player_a")
         player_b = self.store.create_player("Player B", player_id="player_b")
@@ -253,6 +289,39 @@ class WifiRuntimeTests(unittest.IsolatedAsyncioTestCase):
         session_b = self.store.get_session(badge_b.badge_id)
         assert session_b is not None
         self.assertEqual(session_b.active_app, "home")
+
+    async def test_capture_loading_locks_only_the_pokeball_badge(self) -> None:
+        """A slow image job may never freeze another player's controller."""
+
+        player_a = self.store.create_player("Poké Ball Player", player_id="player_a")
+        player_b = self.store.create_player("Other Player", player_id="player_b")
+        capture_badge = await self.runtime.pair_badge(
+            player_id=player_a.player_id, htn_id="a1b2c", app_key="key-a"
+        )
+        other_badge = await self.runtime.pair_badge(
+            player_id=player_b.player_id, htn_id="d3e4f", app_key="key-b"
+        )
+        await self.runtime.launch(capture_badge.htn_id)
+        await self.runtime.launch(other_badge.htn_id)
+
+        await self.runtime.begin_capture_loading(capture_badge.htn_id)
+        self.assertIn(capture_badge.htn_id, self.runtime._capture_loading_badges)
+        # Every button on the paired capture badge is a no-op while its image
+        # job owns the screen.
+        self.assertIsNone(await self.runtime.handle_button(capture_badge.htn_id, "a"))
+        self.assertIsNone(await self.runtime.handle_button(capture_badge.htn_id, "right"))
+
+        # The independent badge remains live and can enter its Dex normally.
+        other_dispatch = await self.runtime.handle_button(other_badge.htn_id, "a")
+        self.assertIsNotNone(other_dispatch)
+        other_session = self.store.get_session(other_badge.badge_id)
+        assert other_session is not None
+        self.assertEqual(other_session.active_app, "dex")
+
+        await self.runtime.end_capture_loading(capture_badge.htn_id, restore=True)
+        self.assertNotIn(capture_badge.htn_id, self.runtime._capture_loading_badges)
+        resumed_dispatch = await self.runtime.handle_button(capture_badge.htn_id, "a")
+        self.assertIsNotNone(resumed_dispatch)
 
     async def test_habitat_a_advances_only_that_badges_world(self) -> None:
         player = self.store.create_player("Player A", player_id="player_a")
