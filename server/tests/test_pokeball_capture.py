@@ -27,6 +27,8 @@ class RecordingRuntime:
     def __init__(self) -> None:
         self.refreshed_players: list[str] = []
         self.capture_loading_calls: list[tuple[str, str, bool | None]] = []
+        self.claimed_htn_id: str | None = "cam01"
+        self.capture_offers: list[dict[str, str]] = []
 
     async def refresh_player(self, player_id: str) -> tuple[()]:
         self.refreshed_players.append(player_id)
@@ -37,6 +39,15 @@ class RecordingRuntime:
 
     async def end_capture_loading(self, htn_id: str, *, restore: bool) -> None:
         self.capture_loading_calls.append(("end", htn_id, restore))
+
+    async def present_capture_offer(self, **offer: str) -> asyncio.Future[str | None]:
+        self.capture_offers.append(dict(offer))
+        result: asyncio.Future[str | None] = asyncio.get_running_loop().create_future()
+        result.set_result(self.claimed_htn_id)
+        return result
+
+    async def dismiss_capture_offer(self, capture_id: str, *, restore: bool) -> None:
+        self.capture_loading_calls.append(("dismiss", capture_id, restore))
 
 
 class PokeballCaptureTests(unittest.IsolatedAsyncioTestCase):
@@ -128,12 +139,50 @@ class PokeballCaptureTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             self.runtime.capture_loading_calls,
-            [("begin", "cam01", None), ("end", "cam01", True)],
+            [
+                ("begin", "cam01", None),
+                ("end", "cam01", False),
+                ("dismiss", "capture_test_02", True),
+            ],
         )
         self.assertEqual(
             [record.name for record in self.store.list_pokemon_for_player("camera_player")],
             ["Blinkbud"],
         )
+        self.assertEqual(self.runtime.capture_offers[0]["name"], "Blinkbud")
+
+    async def test_first_claimant_owns_capture_while_camera_badge_remains_provenance(self) -> None:
+        recipient = self.store.create_player("Recipient", player_id="recipient")
+        winner = self.store.create_badge(
+            "winner", "opaque-winner-key", player_id=recipient.player_id, badge_id="badge_winner"
+        )
+        self.runtime.claimed_htn_id = winner.htn_id
+        creature = {
+            "name": "Claimtail",
+            "species": "camera tripod",
+            "type": "metal",
+            "stats": {"hp": 60, "attack": 70, "defense": 80, "speed": 40},
+            "moves": ["stand_fast", "pan_slam", "focus_lock", "leg_sweep"],
+            "battle_natures": ["steady", "metallic"],
+            "flavour": "It refuses to move once it has found its angle.",
+            "sprite_prompt": "small tripod creature",
+            "rarity": "common",
+        }
+        photo_path = Path(self._temporary_directory.name) / "claim.jpg"
+        photo_path.write_bytes(b"\xff\xd8test-image\xff\xd9")
+
+        with patch.object(main, "process_pokeball_photo", return_value=creature):
+            await main.process_and_store_pokeball_capture(
+                self.app,
+                capture_id="capture_claim_01",
+                photo_path=photo_path,
+                capture_badge=self.badge,
+            )
+
+        claimed = self.store.list_pokemon_for_player(recipient.player_id)
+        self.assertEqual([pokemon.name for pokemon in claimed], ["Claimtail"])
+        self.assertEqual(claimed[0].captured_by_badge_id, self.badge.badge_id)
+        self.assertEqual(claimed[0].metadata["claimed_by_badge_id"], winner.badge_id)
 
 
 if __name__ == "__main__":

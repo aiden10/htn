@@ -122,6 +122,17 @@ class ScreenRendererTests(unittest.TestCase):
         )
         self.assertEqual(renderer.fingerprint(screen), renderer.fingerprint(screen))
 
+    def test_renderer_folds_accents_and_curly_punctuation_for_badge_font(self) -> None:
+        renderer = ScreenRenderer(StaticImageResolver())
+        screen = Screen(
+            (Text(8, 8, "Pokémon’s Shutterball — ready…", size=12),),
+            scene="ascii-text",
+        )
+
+        commands = renderer.render(screen)
+
+        self.assertEqual(commands[0].payload["text"], "Pokemon's Shutterball - ready...")
+
     def test_dex_stats_panel_shows_selected_pokemons_moves(self) -> None:
         context = BadgeUiContext(
             badge_id="badge_test",
@@ -350,6 +361,34 @@ class WifiRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(capture_badge.htn_id, self.runtime._capture_loading_badges)
         resumed_dispatch = await self.runtime.handle_button(capture_badge.htn_id, "a")
         self.assertIsNotNone(resumed_dispatch)
+
+    async def test_capture_offer_awards_first_a_press_and_restores_after_dismissal(self) -> None:
+        player_a = self.store.create_player("Player A", player_id="player_a")
+        player_b = self.store.create_player("Player B", player_id="player_b")
+        badge_a = await self.runtime.pair_badge(
+            player_id=player_a.player_id, htn_id="a1b2c", app_key="key-a"
+        )
+        badge_b = await self.runtime.pair_badge(
+            player_id=player_b.player_id, htn_id="d3e4f", app_key="key-b"
+        )
+        await self.runtime.launch(badge_a.htn_id)
+        await self.runtime.launch(badge_b.htn_id)
+
+        claim = await self.runtime.present_capture_offer(
+            capture_id="capture_offer_01",
+            name="Snapfin",
+            species="camera lens",
+            element="water",
+            rarity="uncommon",
+        )
+        # A press on badge B reaches the shared future first. The later press
+        # from A is ignored rather than changing ownership.
+        self.assertIsNone(await self.runtime.handle_button(badge_b.htn_id, "a"))
+        self.assertEqual(await claim, badge_b.htn_id)
+        self.assertIsNone(await self.runtime.handle_button(badge_a.htn_id, "a"))
+
+        await self.runtime.dismiss_capture_offer("capture_offer_01", restore=True)
+        self.assertIsNone(self.runtime._capture_offer)
 
     async def test_habitat_a_advances_only_that_badges_world(self) -> None:
         player = self.store.create_player("Player A", player_id="player_a")

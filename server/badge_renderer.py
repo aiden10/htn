@@ -15,6 +15,7 @@ from io import BytesIO
 import json
 from pathlib import Path
 from typing import Iterable, Protocol
+import unicodedata
 
 from PIL import Image as PillowImage
 
@@ -91,9 +92,28 @@ def _font_width(scale: int) -> int:
 
 
 def _ascii(text: str) -> str:
-    """HTN OS accepts printable ASCII only; retain layout rather than failing."""
+    """Convert badge text into readable printable ASCII.
 
-    return "".join(character if character == "\n" or 32 <= ord(character) <= 126 else "?" for character in text)
+    HTN OS's bitmap font replaces non-ASCII punctuation and accents with a
+    question mark. Normalize common punctuation first, then fold accented
+    Latin characters (``Pokémon`` -> ``Pokemon``) instead of exposing that
+    fallback glyph on the badge.
+    """
+
+    punctuation = str.maketrans(
+        {
+            "’": "'",
+            "‘": "'",
+            "“": '"',
+            "”": '"',
+            "–": "-",
+            "—": "-",
+            "…": "...",
+            "•": "-",
+        }
+    )
+    normalized = unicodedata.normalize("NFKD", text.translate(punctuation))
+    return normalized.encode("ascii", errors="ignore").decode("ascii")
 
 
 def _ellipsize(text: str, count: int) -> str:

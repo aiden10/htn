@@ -658,7 +658,7 @@ def ownership_transfer_to_dict(transfer: OwnershipTransfer) -> dict[str, JSONVal
 def battle_pokemon_snapshot_from_pokemon(pokemon: PokemonRecord) -> BattlePokemonSnapshot:
     """Freeze a battle-ready profile from a current owned Pokemon record.
 
-    Old prototype captures may still be readable by the Pokedex with fewer
+    Old prototype captures may still be readable by the Shutterdex with fewer
     moves or battle tags.  They cannot enter a battle until capture generation
     repairs them, which avoids a combat rule silently inventing a loadout.
     """
@@ -1465,7 +1465,7 @@ class BadgeStore:
         This is intentionally a convenience method rather than an implicit
         side effect of challenge creation.  A caller may later offer a
         deliberate subset, while the default challenge flow gets the six most
-        recent captures in the exact order shown by the Pokedex.
+        recent captures in the exact order shown by the Shutterdex.
         """
 
         player_id = _identifier(player_id, "player_id")

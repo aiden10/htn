@@ -741,7 +741,7 @@ class HomeApp(BadgeApp):
 
 
 class DexApp(BadgeApp):
-    """Pokedex grid/detail scene backed by the current player's Pokemon rows."""
+    """Shutterdex grid/detail scene backed by the current player's Pokemon rows."""
 
     app_id = "dex"
 
@@ -773,7 +773,7 @@ class DexApp(BadgeApp):
         operations: list[DrawOperation] = [
             Clear(theme.background),
             Leds((theme.accent, theme.accent, theme.focus), brightness=35),
-            Text(10, 10, "POKEDEX", theme.text, size=23),
+            Text(10, 10, "SHUTTERDEX", theme.text, size=23),
             Text(10, 33, f"{len(pokemon)} CAPTURE{'S' if len(pokemon) != 1 else ''}", theme.muted, size=11),
             Rect(8, 48, 150, context.height - 56, theme.surface, radius=8),
             Rect(164, 48, context.width - 172, context.height - 56, theme.surface, radius=8),
@@ -1068,7 +1068,7 @@ class HabitatApp(BadgeApp):
 
     @staticmethod
     def _creatures(context: BadgeUiContext) -> tuple[HabitatCreature, ...]:
-        """Supply a harmless static fallback when only Pokedex data is loaded."""
+        """Supply a harmless static fallback when only Shutterdex data is loaded."""
 
         if context.creatures:
             return context.creatures

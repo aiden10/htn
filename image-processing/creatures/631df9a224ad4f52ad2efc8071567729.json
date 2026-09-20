@@ -1,0 +1,35 @@
+{
+  "species": "exit sign",
+  "species_key": "exit_sign",
+  "name": "Exitron",
+  "type": "circuit",
+  "stats": {
+    "hp": 70,
+    "attack": 85,
+    "defense": 65,
+    "speed": 180
+  },
+  "moves": [
+    "overclock",
+    "arc_lash",
+    "static_nip",
+    "flare_charge"
+  ],
+  "battle_natures": [
+    "conductive",
+    "reflective",
+    "magnetic"
+  ],
+  "flavour": "It points toward safety, but always runs the other direction first.",
+  "rarity": "uncommon",
+  "sprite_prompt": "Rectangular translucent green torso mounted on thin silver metallic legs, glowing neon running glyph across its chest, twin trailing copper antennae.",
+  "first_seen": "2026-09-20T04:01:28",
+  "sightings": 1,
+  "photo_hash": "9970e911762c",
+  "sprite": "exit_sign_0.png",
+  "timing": {
+    "vision_s": 9.21,
+    "image_s": 3.9,
+    "total_s": 13.21
+  }
+}

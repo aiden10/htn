@@ -44,6 +44,9 @@ POKEBALL_GAME_DATA_DIR = IMAGE_PROCESSING_DIR / "gamedata"
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 MAX_POKEBALL_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_SPRITE_BYTES = 5 * 1024 * 1024
+# One camera can only capture one creature at a time. Do not indefinitely
+# block its next photo if every player walks away from the claim prompt.
+POKEBALL_CLAIM_TIMEOUT_SECONDS = 60
 ALLOWED_IMAGE_TYPES = {
     "image/jpeg": ".jpg",
     "image/png": ".png",
@@ -216,18 +219,23 @@ async def store_pokeball_creature(
     capture_id: str,
     capture_badge: Badge,
     creature: Mapping[str, object],
+    owner_badge: Badge | None = None,
+    refresh_owner: bool = True,
 ) -> None:
-    """Persist one generated capture, attach its sprite, and refresh its owner."""
+    """Persist a generated capture for its claimant and retain camera provenance."""
 
+    owner_badge = owner_badge or capture_badge
     assert capture_badge.player_id is not None
+    assert owner_badge.player_id is not None
     profile = pokeball_profile(creature)
     profile["metadata"] = {
         "source": "pokeball-camera",
         "capture_id": capture_id,
+        "claimed_by_badge_id": owner_badge.badge_id,
     }
     record = pokemon_from_dict(
         profile,
-        owner_player_id=capture_badge.player_id,
+        owner_player_id=owner_badge.player_id,
         captured_by_badge_id=capture_badge.badge_id,
     )
     created = await asyncio.to_thread(app.state.shutterdex_store.create_pokemon, record)
@@ -242,22 +250,23 @@ async def store_pokeball_creature(
             app.state.shutterdex_store.update_pokemon_sprite,
             created.pokemon_id,
             sprite_key,
-            expected_owner_player_id=capture_badge.player_id,
+            expected_owner_player_id=owner_badge.player_id,
         )
 
-    await app.state.shutterdex_runtime.refresh_player(capture_badge.player_id)
+    if refresh_owner:
+        await app.state.shutterdex_runtime.refresh_player(owner_badge.player_id)
     LOGGER.info(
-        "Poké Ball capture %s stored as %s for badge %s.",
+        "Poké Ball capture %s stored as %s for claimant badge %s.",
         capture_id,
         created.pokemon_id,
-        capture_badge.htn_id,
+        owner_badge.htn_id,
     )
 
 
 async def process_and_store_pokeball_capture(
     app: FastAPI, *, capture_id: str, photo_path: Path, capture_badge: Badge
 ) -> None:
-    """Serialize one camera's generation jobs, then add the result to its Dex.
+    """Serialize one camera's generation jobs, then offer the result to players.
 
     The image pipeline is CPU/network-bound and may take a while, so it runs
     in this task rather than in the request handler. The one badge paired to
@@ -267,6 +276,7 @@ async def process_and_store_pokeball_capture(
     """
 
     loading_started = False
+    offer_presented = False
     try:
         async with app.state.pokeball_generation_lock:
             await app.state.shutterdex_runtime.begin_capture_loading(
@@ -274,24 +284,53 @@ async def process_and_store_pokeball_capture(
             )
             loading_started = True
             creature = await asyncio.to_thread(process_pokeball_photo, photo_path)
+            profile = pokeball_profile(creature)
+            # Generation is over: the Poké Ball now participates in the same
+            # claim prompt as every other player badge rather than receiving a
+            # hard-coded owner assignment.
+            await app.state.shutterdex_runtime.end_capture_loading(
+                capture_badge.htn_id, restore=False
+            )
+            loading_started = False
+            claim = await app.state.shutterdex_runtime.present_capture_offer(
+                capture_id=capture_id,
+                name=str(profile["name"]),
+                species=str(profile["species"]),
+                element=str(profile["type"]),
+                rarity=str(profile["rarity"]),
+            )
+            offer_presented = True
+            try:
+                winner_htn_id = await asyncio.wait_for(
+                    claim, timeout=POKEBALL_CLAIM_TIMEOUT_SECONDS
+                )
+            except asyncio.TimeoutError:
+                winner_htn_id = None
+            if winner_htn_id is None:
+                LOGGER.info("Poké Ball capture %s was not claimed.", capture_id)
+                return
+            winner = app.state.shutterdex_store.require_badge_by_htn_id(winner_htn_id)
+            if winner.player_id is None:
+                raise RuntimeError("A capture claimant must be assigned to a player.")
             await store_pokeball_creature(
                 app,
                 capture_id=capture_id,
                 capture_badge=capture_badge,
                 creature=creature,
+                owner_badge=winner,
+                # The offer is still the visible scene. Restore all eligible
+                # badges together once the owner's fresh collection is durable.
+                refresh_owner=False,
             )
-            # ``refresh_player`` deliberately leaves the capture overlay in
-            # place. Restore once the new Pokémon is durably saved so the
-            # first normal frame already contains the updated Dex/Habitat.
-            await app.state.shutterdex_runtime.end_capture_loading(
-                capture_badge.htn_id, restore=True
-            )
-            loading_started = False
     except Exception:
         # The source photo remains in captures/ for diagnosis/replay. Avoid
         # logging its image data or any badge credential.
         LOGGER.exception("Poké Ball capture %s could not be processed.", capture_id)
     finally:
+        if offer_presented:
+            await app.state.shutterdex_runtime.dismiss_capture_offer(
+                capture_id, restore=True
+            )
         if loading_started:
             # A processing error must never leave the physical capture badge
             # permanently locked behind the loading screen.
@@ -634,7 +673,7 @@ async def health() -> dict[str, str]:
 @app.post("/upload", include_in_schema=False, status_code=status.HTTP_202_ACCEPTED)
 @app.post("/pokeball/upload", status_code=status.HTTP_202_ACCEPTED, tags=["pokeball"])
 async def receive_pokeball_camera_image(request: Request) -> dict[str, object]:
-    """Accept the ESP32 camera's raw JPEG and queue one player-owned capture.
+    """Accept the ESP32 camera's raw JPEG and queue one player-claimable capture.
 
     The branch's camera already sends an ``image/jpeg`` request body to
     ``/upload``. This preserves that wire format while moving the resulting
@@ -703,8 +742,8 @@ async def receive_pokeball_camera_image(request: Request) -> dict[str, object]:
     return {
         "capture_id": capture_id,
         "status": "accepted",
-        "target_badge": capture_badge.htn_id,
-        "next_step": "The image is generating a Pokemon for this badge's player.",
+        "pokeball_badge": capture_badge.htn_id,
+        "next_step": "The image is generating a Pokemon; the first connected player badge to claim it receives it.",
     }
 
 

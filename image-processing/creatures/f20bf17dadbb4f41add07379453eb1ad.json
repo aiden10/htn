@@ -1,0 +1,35 @@
+{
+  "species": "shutter",
+  "species_key": "shutter",
+  "name": "Shuttervine",
+  "type": "verdant",
+  "stats": {
+    "hp": 95,
+    "attack": 60,
+    "defense": 165,
+    "speed": 80
+  },
+  "moves": [
+    "root_bind",
+    "thorn_tap",
+    "bedrock_stance",
+    "photosynth"
+  ],
+  "battle_natures": [
+    "flammable",
+    "rooted",
+    "verdant"
+  ],
+  "flavour": "It slams shut whenever neighbors try to make small talk.",
+  "rarity": "uncommon",
+  "sprite_prompt": "A rectangular wooden torso formed from twin ochre panels, bound by dark thorny tendril limbs and crowned with tangled dried ivy fibers.",
+  "first_seen": "2026-09-20T03:48:01",
+  "sightings": 1,
+  "photo_hash": "d193029ca4ca",
+  "sprite": "shutter_0.png",
+  "timing": {
+    "vision_s": 9.43,
+    "image_s": 4.04,
+    "total_s": 13.58
+  }
+}

@@ -84,6 +84,20 @@ class RenderDispatch:
     render_hash: str
 
 
+@dataclass(slots=True)
+class CaptureOffer:
+    """One generated creature waiting for a player badge to claim it."""
+
+    capture_id: str
+    name: str
+    species: str
+    element: str
+    rarity: str
+    recipient_htn_ids: set[str]
+    result: asyncio.Future[str | None]
+    declined_htn_ids: set[str]
+
+
 class ShutterdexRuntime:
     """Coordinates persisted UI sessions, collections, and badge commands.
 
@@ -153,6 +167,7 @@ class ShutterdexRuntime:
         self._battle_expiry_task: asyncio.Task[None] | None = None
         self._capture_loading_badges: set[str] = set()
         self._capture_loading_tasks: dict[str, asyncio.Task[None]] = {}
+        self._capture_offer: CaptureOffer | None = None
         self._habitat_scroll_step = 0
         self._started = False
 
@@ -222,6 +237,9 @@ class ShutterdexRuntime:
             await asyncio.gather(*self._capture_loading_tasks.values(), return_exceptions=True)
         self._capture_loading_tasks.clear()
         self._capture_loading_badges.clear()
+        if self._capture_offer is not None and not self._capture_offer.result.done():
+            self._capture_offer.result.set_result(None)
+        self._capture_offer = None
         for task in tuple(self._delivery_tasks):
             task.cancel()
         if self._delivery_tasks:
@@ -335,6 +353,36 @@ class ShutterdexRuntime:
                 # A physical Poké Ball capture owns this badge's screen until
                 # its image has been processed and persisted. Other badges
                 # remain completely independent and keep accepting events.
+                return None
+            offer = self._capture_offer
+            if offer is not None and htn_id in offer.recipient_htn_ids:
+                # This modal owns every input until it is claimed or declined.
+                # ``set_result`` has no await point, so two simultaneous A
+                # presses still resolve deterministically: the event handler
+                # that reaches this line first wins.
+                button_event = ButtonEvent.from_raw(button, repeat=repeat)
+                if button_event.repeat:
+                    return None
+                if button_event.button is Button.A and not offer.result.done():
+                    offer.result.set_result(htn_id)
+                elif button_event.button is Button.B:
+                    offer.declined_htn_ids.add(htn_id)
+                    offer.recipient_htn_ids.discard(htn_id)
+                    if not offer.recipient_htn_ids and not offer.result.done():
+                        offer.result.set_result(None)
+                    # A pass is final for this offer. Restore that badge's
+                    # saved app immediately while other players still choose.
+                    context = self._context_for_badge(badge)
+                    stored = self._ensure_session(badge, context)
+                    session = self._session_state(stored, context)
+                    return await self._persist_and_enqueue_locked(
+                        badge,
+                        stored,
+                        session,
+                        screen=self.ui.render(session, context),
+                        force=True,
+                        scroll_step=self._habitat_scroll_step,
+                    )
                 return None
             context = self._context_for_badge(badge)
             stored = self._ensure_session(badge, context)
@@ -935,6 +983,108 @@ class ShutterdexRuntime:
         except (CredentialError, GatewayError, RenderError, ShutterdexRuntimeError) as exc:
             LOGGER.warning("Could not restore capture badge %s: %s", htn_id, exc)
 
+    async def present_capture_offer(
+        self,
+        *,
+        capture_id: str,
+        name: str,
+        species: str,
+        element: str,
+        rarity: str,
+    ) -> asyncio.Future[str | None]:
+        """Show a generated creature to every currently connected player badge.
+
+        The returned future resolves to the HTN ID of the first badge pressing
+        A, or ``None`` if all recipients decline/this runtime closes. The
+        generated profile remains server-side until the winner is known, so a
+        capture never temporarily belongs to the Poké Ball badge's player.
+        """
+
+        if self._capture_offer is not None:
+            raise ShutterdexRuntimeError("Another Poké Ball creature is already awaiting a player.")
+        recipients = {
+            badge.htn_id
+            for badge in self.store.list_badges()
+            if badge.player_id is not None and badge.htn_id in self.gateway.registered_badge_ids
+        }
+        result: asyncio.Future[str | None] = asyncio.get_running_loop().create_future()
+        offer = CaptureOffer(
+            capture_id=capture_id,
+            name=name,
+            species=species,
+            element=element,
+            rarity=rarity,
+            recipient_htn_ids=recipients,
+            result=result,
+            declined_htn_ids=set(),
+        )
+        self._capture_offer = offer
+        if not recipients:
+            result.set_result(None)
+            return result
+
+        delivered: set[str] = set()
+        for htn_id in tuple(recipients):
+            try:
+                await self._render_capture_offer(htn_id, offer)
+                delivered.add(htn_id)
+            except (CredentialError, GatewayError, RenderError, ShutterdexRuntimeError) as exc:
+                LOGGER.warning("Could not offer capture to badge %s: %s", htn_id, exc)
+        offer.recipient_htn_ids.intersection_update(delivered)
+        if not offer.recipient_htn_ids and not result.done():
+            result.set_result(None)
+        return result
+
+    async def dismiss_capture_offer(self, capture_id: str, *, restore: bool) -> None:
+        """Remove an offer after its winner is stored or it expires."""
+
+        offer = self._capture_offer
+        if offer is None or offer.capture_id != capture_id:
+            return
+        self._capture_offer = None
+        if not restore:
+            return
+        for htn_id in tuple(offer.recipient_htn_ids):
+            try:
+                async with self._lock_for(htn_id):
+                    badge = await self.ensure_registered(htn_id)
+                    await self._render_current_locked(
+                        badge, force=True, scroll_step=self._habitat_scroll_step
+                    )
+            except (CredentialError, GatewayError, RenderError, ShutterdexRuntimeError) as exc:
+                LOGGER.warning("Could not restore badge %s after capture offer: %s", htn_id, exc)
+
+    async def _render_capture_offer(self, htn_id: str, offer: CaptureOffer) -> None:
+        """Paint the temporary claim modal without changing the saved app."""
+
+        async with self._lock_for(htn_id):
+            if self._capture_offer is not offer or htn_id not in offer.recipient_htn_ids:
+                return
+            badge = await self.ensure_registered(htn_id)
+            commands = self.renderer.render(self._capture_offer_screen(offer))
+            tickets = await self._enqueue_frame(badge.htn_id, commands)
+            self._watch_delivery(badge.htn_id, tickets)
+
+    @staticmethod
+    def _capture_offer_screen(offer: CaptureOffer) -> Screen:
+        """A small modal rendered identically on every eligible badge."""
+
+        element = offer.element.upper()[:18] or "MYSTERY"
+        return Screen(
+            (
+                Clear("#101827"),
+                Leds(("#F8C94A", "#5BC0EB", "#F8C94A"), brightness=42),
+                Rect(16, 20, 288, 200, "#1D2B45", radius=16),
+                Rect(34, 43, 252, 9, "#F8C94A", radius=5),
+                Text(38, 73, "WILD CAPTURE!", "#F8C94A", size=19, max_width=244),
+                Text(38, 105, offer.name, "#F6F7FB", size=24, max_width=244, scroll=True),
+                Text(38, 136, offer.species, "#C9D6E6", size=12, max_width=244, scroll=True),
+                Text(38, 158, f"{element} - {offer.rarity.upper()}", "#5BC0EB", size=11, max_width=244),
+                Text(38, 191, "A CLAIM   B PASS", "#EAF6FF", size=13, max_width=244),
+            ),
+            scene="capture-offer",
+        )
+
     def _clear_capture_loading_task(
         self, htn_id: str, completed: asyncio.Task[None]
     ) -> None:
@@ -987,7 +1137,7 @@ class ShutterdexRuntime:
         title, detail, accent, leds = (
             (
                 "CAPTURE RECEIVED",
-                "Storing the Poké Ball snapshot...",
+                "Storing the Shutterball snapshot...",
                 "#5BC0EB",
                 ("#5BC0EB", "#5BC0EB", "#1B4965"),
             ),
@@ -999,7 +1149,7 @@ class ShutterdexRuntime:
             ),
             (
                 "SUMMONING",
-                "Giving your new Pokémon a form...",
+                "Giving your new Pokemon a form...",
                 "#C77DFF",
                 ("#C77DFF", "#C77DFF", "#F8C94A"),
             ),
@@ -1011,7 +1161,7 @@ class ShutterdexRuntime:
                 Leds(leds, brightness=40),
                 Rect(18, 25, 284, 190, "#1D2B45", radius=16),
                 Rect(35, 48, 250, 10, accent, radius=5),
-                Text(38, 78, "POKÉ BALL", "#EAF6FF", size=13, max_width=244),
+                Text(38, 78, "SHUTTERBALL", "#EAF6FF", size=13, max_width=244),
                 Text(38, 108, title, accent, size=20, max_width=244),
                 Text(38, 142, detail, "#C9D6E6", size=12, max_width=244, scroll=True),
                 Text(38, 181, "PLEASE WAIT" + "." * dot_count, "#8FA4BE", size=11, max_width=244),
@@ -1033,6 +1183,10 @@ class ShutterdexRuntime:
             # image job completes. Background collection refreshes and
             # reconnect replays must not paint over it.
             if htn_id in self._capture_loading_badges:
+                return None
+            if self._capture_offer is not None and htn_id in self._capture_offer.recipient_htn_ids:
+                # The claim modal is intentionally above the saved app until
+                # this player accepts, passes, or another player wins.
                 return None
             badge = await self.ensure_registered(htn_id)
             stored = self._ensure_session(badge, self._context_for_badge(badge))
@@ -1252,6 +1406,11 @@ class ShutterdexRuntime:
                 await asyncio.sleep(self.HABITAT_SCROLL_INTERVAL_SECONDS)
                 self._habitat_scroll_step += self.HABITAT_SCROLL_CHARACTERS_PER_TICK
                 for badge in self.store.list_badges():
+                    if (
+                        self._capture_offer is not None
+                        and badge.htn_id in self._capture_offer.recipient_htn_ids
+                    ):
+                        continue
                     session = self.store.get_session(badge.badge_id)
                     if session is None or not session.canvas_active:
                         continue
@@ -1451,7 +1610,11 @@ class ShutterdexRuntime:
                     )
             if event.event_type == "transport_reconnected":
                 try:
-                    await self.refresh_badge(badge.htn_id)
+                    offer = self._capture_offer
+                    if offer is not None and badge.htn_id in offer.recipient_htn_ids:
+                        await self._render_capture_offer(badge.htn_id, offer)
+                    else:
+                        await self.refresh_badge(badge.htn_id)
                 except (GatewayError, ShutterdexRuntimeError, RenderError) as exc:
                     LOGGER.warning("Could not replay screen for badge %s: %s", badge.htn_id, exc)
             return

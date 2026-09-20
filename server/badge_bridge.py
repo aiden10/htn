@@ -206,7 +206,7 @@ def list_available_ports() -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Publish a PokeLife world snapshot to one badge.")
     parser.add_argument("--port", help="Windows COM port for the ESP32 USB JTAG/serial device")
-    parser.add_argument("--slug", default="pokedex", help="Badge app slug (default: pokedex)")
+    parser.add_argument("--slug", default="shutterdex", help="Badge app slug (default: shutterdex)")
     parser.add_argument("--server", default="http://127.0.0.1:8000", help="FastAPI base URL")
     parser.add_argument("--live", action="store_true", help="Publish the real world instead of the isolated test world")
     parser.add_argument("--run-test", action="store_true", help="Reset dummy data and run one simulation tick before publishing")
