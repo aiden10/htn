@@ -669,6 +669,16 @@ class HabitatApp(BadgeApp):
     """Living-world scene.  It renders server simulation positions; it does not simulate."""
 
     app_id = "habitat"
+    BACKGROUND_IDS = (
+        "sunrise",
+        "early_morning",
+        "late_morning",
+        "noon",
+        "afternoon",
+        "golden_hour",
+        "dusk",
+        "night",
+    )
 
     def __init__(self, *, theme: Theme = DEFAULT_THEME) -> None:
         self._theme = theme
@@ -680,6 +690,7 @@ class HabitatApp(BadgeApp):
             "panel": "event",
             "busy": False,
             "notice": "",
+            "background_index": 0,
         }
 
     def reduce(self, state: JsonObject, event: ButtonEvent, context: BadgeUiContext) -> AppUpdate:
@@ -693,6 +704,9 @@ class HabitatApp(BadgeApp):
         )
         busy = bool(state.get("busy", False))
         notice = state.get("notice") if isinstance(state.get("notice"), str) else ""
+        background_index = _clamp(
+            _int(state.get("background_index")), 0, len(self.BACKGROUND_IDS) - 1
+        )
         if event.button is Button.LEFT:
             selected = _focus_after_button(selected, len(creatures), Button.LEFT)
             panel, notice = "creature", ""
@@ -725,6 +739,7 @@ class HabitatApp(BadgeApp):
                 "panel": panel,
                 "busy": busy,
                 "notice": notice,
+                "background_index": background_index,
             }
         )
 
@@ -740,6 +755,9 @@ class HabitatApp(BadgeApp):
         )
         busy = bool(state.get("busy", False))
         notice = state.get("notice") if isinstance(state.get("notice"), str) else ""
+        background_index = _clamp(
+            _int(state.get("background_index")), 0, len(self.BACKGROUND_IDS) - 1
+        )
         world_top, world_bottom = 50, context.height - 66
         world_height = world_bottom - world_top
         operations: list[DrawOperation] = [
@@ -763,10 +781,13 @@ class HabitatApp(BadgeApp):
                 size=9,
                 max_width=context.width - 20,
             ),
-            Rect(8, world_top, context.width - 16, world_height, "#245B67", radius=8),
-            Rect(12, world_top + world_height // 2, context.width - 24, world_height // 2 - 4, "#397B56", radius=6),
-            Rect(20, world_top + 19, 52, 11, "#7EC8E3", radius=6),
-            Rect(context.width - 73, world_top + 23, 40, 35, "#305943", radius=18),
+            Image(
+                8,
+                world_top,
+                context.width - 16,
+                world_height,
+                f"habitat://{self.BACKGROUND_IDS[background_index]}",
+            ),
         ]
         if not creatures:
             operations.append(Text(20, world_top + 24, "No Pokemon are in this habitat yet.", theme.text, size=14, max_width=context.width - 40, max_lines=2))

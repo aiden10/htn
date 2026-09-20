@@ -49,6 +49,10 @@ class StaticImageResolver:
     """A renderer image source with no filesystem fixture."""
 
     def load_png(self, source: str, width: int, height: int) -> bytes:
+        if source.startswith("habitat://"):
+            if (width, height) != (304, 124):
+                raise AssertionError(f"Unexpected Habitat size: {(width, height)}")
+            return b"static-habitat-background"
         if source != "sprite://diagnostic":
             raise AssertionError(f"Unexpected image source: {source}")
         if (width, height) != (12, 10):
@@ -399,6 +403,9 @@ class WifiRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 and saved.app_state["habitat"]["busy"] is False
             )
         )
+        saved = self.store.get_session(badge.badge_id)
+        assert saved is not None
+        self.assertEqual(saved.app_state["habitat"]["background_index"], 1)
 
 
 if __name__ == "__main__":

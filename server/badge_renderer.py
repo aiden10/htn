@@ -36,20 +36,31 @@ class ImageResolver(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class SpriteImageResolver:
-    """Resolve ``sprite://<sprite-key>`` references from the existing store."""
+    """Resolve local sprite and static Habitat image references for a badge."""
 
     sprites: SpriteStore
+    habitat_directory: Path | None = None
 
     def load_png(self, source: str, width: int, height: int) -> bytes:
-        if not source.startswith("sprite://"):
-            raise RenderError("Only local sprite:// image sources are permitted.")
-        key = source.removeprefix("sprite://")
-        try:
-            path = self.sprites.source_path(key)
-        except Exception as exc:
-            raise RenderError("Invalid sprite reference.") from exc
+        if source.startswith("sprite://"):
+            key = source.removeprefix("sprite://")
+            try:
+                path = self.sprites.source_path(key)
+            except Exception as exc:
+                raise RenderError("Invalid sprite reference.") from exc
+        elif source.startswith("habitat://"):
+            key = source.removeprefix("habitat://")
+            if (
+                self.habitat_directory is None
+                or not key
+                or not all(character.islower() or character.isdigit() or character == "_" for character in key)
+            ):
+                raise RenderError("Invalid static Habitat reference.")
+            path = self.habitat_directory / f"{key}.png"
+        else:
+            raise RenderError("Only local sprite:// and habitat:// sources are permitted.")
         if not path.is_file():
-            raise RenderError(f"Sprite {key!r} does not exist.")
+            raise RenderError(f"Image asset {key!r} does not exist.")
         try:
             with PillowImage.open(path) as source_image:
                 rgba = source_image.convert("RGBA")
@@ -60,7 +71,7 @@ class SpriteImageResolver:
                 scaled.save(output, format="PNG", optimize=True)
                 return output.getvalue()
         except OSError as exc:
-            raise RenderError(f"Could not read sprite {key!r}.") from exc
+            raise RenderError(f"Could not read image asset {key!r}.") from exc
 
 
 def _font_scale(pixel_size: int) -> int:

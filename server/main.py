@@ -36,6 +36,7 @@ load_dotenv(SERVER_DIR / ".env")
 DATA_DIR = SERVER_DIR / "data"
 UPLOAD_DIR = SERVER_DIR / "uploads"
 SPRITE_DIR = DATA_DIR / "sprites"
+HABITAT_ASSET_DIR = SERVER_DIR / "assets" / "habitat"
 POKEBALL_CAPTURE_DIR = IMAGE_PROCESSING_DIR / "captures"
 POKEBALL_OUTPUT_DIR = IMAGE_PROCESSING_DIR / "creatures"
 POKEBALL_GAME_DATA_DIR = IMAGE_PROCESSING_DIR / "gamedata"
@@ -380,7 +381,9 @@ async def lifespan(app: FastAPI):
         gateway=app.state.shutterdex_gateway,
         vault=make_credential_vault(),
         ui=BadgeUi.standard(),
-        renderer=ScreenRenderer(SpriteImageResolver(app.state.sprites)),
+        renderer=ScreenRenderer(
+            SpriteImageResolver(app.state.sprites, habitat_directory=HABITAT_ASSET_DIR)
+        ),
         sprites=app.state.sprites,
         on_habitat_advance=app.state.player_simulation.tick,
     )

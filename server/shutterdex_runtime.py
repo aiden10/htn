@@ -362,6 +362,7 @@ class ShutterdexRuntime:
                     ),
                     event_count=len(context.events),
                     show_latest_event=succeeded,
+                    advance_background=succeeded,
                 )
                 if (
                     htn_id in self._capture_loading_badges
@@ -403,6 +404,7 @@ class ShutterdexRuntime:
         notice: str,
         event_count: int,
         show_latest_event: bool = False,
+        advance_background: bool = False,
     ) -> BadgeSessionState:
         """Return one session with transient per-badge Habitat feedback."""
 
@@ -413,6 +415,15 @@ class ShutterdexRuntime:
         habitat_state = dict(app_states.get("habitat", {}))
         habitat_state["busy"] = busy
         habitat_state["notice"] = notice
+        background_index = habitat_state.get("background_index", 0)
+        if not isinstance(background_index, int) or isinstance(background_index, bool):
+            background_index = 0
+        if advance_background:
+            # One validated world advance moves this badge to the next static
+            # time-of-day image. The modulo is essential: ``+= 1 % count``
+            # would never wrap around.
+            background_index = (background_index + 1) % 8
+        habitat_state["background_index"] = background_index
         if busy:
             habitat_state["panel"] = "status"
         elif show_latest_event:
