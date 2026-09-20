@@ -643,12 +643,12 @@ class Theme:
     background: str = "#241F1B"
     surface: str = "#39302A"
     surface_alt: str = "#4A3E35"
-    # Warm parchment is the primary selection colour; mint remains a quieter
-    # accent for active/player-owned UI rather than covering whole cards.
-    focus: str = "#DECBB5"
-    focus_text: str = "#241F1B"
+    # Highlight labels need to remain readable over the dark canvas. Mint is
+    # the interactive accent; parchment stays as the warm secondary colour.
+    focus: str = "#FFF4E5"
+    focus_text: str = "#FFF8F0"
     text: str = "#FFF8F0"
-    muted: str = "#C7B7A7"
+    muted: str = "#DECBB5"
     accent: str = "#B3E3A7"
     # Orange is reserved for model/Director activity and rationale.
     director: str = "#F78563"
@@ -731,13 +731,22 @@ class HomeApp(BadgeApp):
         )
         for index, destination in enumerate(self._destinations):
             selected = index == focus
-            fill = theme.accent if selected else theme.surface
-            title_color = theme.focus_text if selected else theme.text
-            sub_color = "#284030" if selected else theme.muted
+            fill = theme.surface_alt if selected else theme.surface
+            title_color = theme.text
+            sub_color = theme.accent if selected else theme.muted
             title, subtitle = labels.get(destination, (destination.upper(), ""))
             operations.extend(
                 (
-                    Rect(14, card_y, context.width - 28, card_height, fill, radius=9),
+                    Rect(
+                        14,
+                        card_y,
+                        context.width - 28,
+                        card_height,
+                        fill,
+                        stroke=theme.accent if selected else None,
+                        stroke_width=2 if selected else 0,
+                        radius=9,
+                    ),
                     Text(29, card_y + 7, ("> " if selected else "  ") + title, title_color, size=17),
                     Text(48, card_y + 27, subtitle, sub_color, size=11, max_width=context.width - 70),
                 )
@@ -845,16 +854,27 @@ class DexApp(BadgeApp):
             y = 56 + row * 82
             absolute_index = first + local_index
             highlighted = absolute_index == selected
-            fill = theme.accent if highlighted else theme.surface_alt
-            text_color = theme.focus_text if highlighted else theme.text
-            operations.append(Rect(x, y, cell_width, cell_height, fill, radius=7))
+            fill = theme.surface if highlighted else theme.surface_alt
+            text_color = theme.text
+            operations.append(
+                Rect(
+                    x,
+                    y,
+                    cell_width,
+                    cell_height,
+                    fill,
+                    stroke=theme.accent if highlighted else None,
+                    stroke_width=2 if highlighted else 0,
+                    radius=7,
+                )
+            )
             if mon.sprite_url:
                 operations.append(Image(x + 17, y + 6, 34, 34, mon.sprite_url))
             else:
                 operations.append(Text(x + 26, y + 14, mon.name[:1].upper(), text_color, size=25))
             operations.append(Text(x + 5, y + 43, mon.name, text_color, size=12, max_width=58, scroll=True))
             operations.append(
-                Text(x + 5, y + 60, mon.element.upper(), "#57491B" if highlighted else _element_colour(mon.element), size=10, max_width=58, scroll=True)
+                Text(x + 5, y + 60, mon.element.upper(), theme.accent if highlighted else _element_colour(mon.element), size=10, max_width=58, scroll=True)
             )
 
         mon = pokemon[selected]
@@ -1415,12 +1435,21 @@ class BattleApp(BadgeApp):
         for index, opponent in enumerate(opponents[:4]):
             selected = index == focus
             y = 89 + index * 27
-            fill = theme.accent if selected else theme.surface
-            colour = theme.focus_text if selected else theme.text
+            fill = theme.surface_alt if selected else theme.surface
+            colour = theme.text
             marker = "> " if selected else "  "
             operations.extend(
                 (
-                    Rect(16, y, context.width - 32, 23, fill, radius=6),
+                    Rect(
+                        16,
+                        y,
+                        context.width - 32,
+                        23,
+                        fill,
+                        stroke=theme.accent if selected else None,
+                        stroke_width=2 if selected else 0,
+                        radius=6,
+                    ),
                     Text(28, y + 5, marker + opponent.htn_id.upper(), colour, size=12, max_width=context.width - 56),
                 )
             )
@@ -1667,11 +1696,20 @@ class BattleApp(BadgeApp):
             column, row = index % 2, index // 2
             x, y = 8 + column * (cell_width + 8), 178 + row * 28
             selected = enabled and index == move_index
-            fill = theme.accent if selected else theme.surface_alt
-            text_colour = theme.focus_text if selected else (theme.text if enabled else theme.muted)
+            fill = theme.surface if selected else theme.surface_alt
+            text_colour = theme.text if enabled else theme.muted
             operations.extend(
                 (
-                    Rect(x, y, cell_width, 24, fill, radius=6),
+                    Rect(
+                        x,
+                        y,
+                        cell_width,
+                        24,
+                        fill,
+                        stroke=theme.accent if selected else None,
+                        stroke_width=2 if selected else 0,
+                        radius=6,
+                    ),
                     Text(
                         x + 7,
                         y + 6,
