@@ -1,12 +1,12 @@
 # About
 
-ShutterDex allows you to take a picture from a Pokéball and see the captured object come to life. 
+ShutterDex allows you to take a picture from a Pokéball and see the captured object come to life on your [badge](https://badge.hackthenorth.com/). 
 
 <img width="817" height="311" alt="ball" src="https://github.com/user-attachments/assets/c6a3b8d9-cf15-40c2-aa7e-0aaefde84ab9" />
 
 Submitted to [Hack the North 2026](https://devpost.com/software/htn-vgd2jp).
 
-Utilized Hack the North 2026's [badges](https://badge.hackthenorth.com/).
+Created by Aashvik Tyagi, Ibrahim Sarwar, Amar Al-Zubaidi, and Aiden Tenn
 
 ## Capture Pipeline
 
@@ -136,9 +136,3 @@ Run `pip install -r requirements.txt`
 Ensure the badges you'll use are turned on.
 
 Start server with `python -m uvicorn main:app --host 0.0.0.0`.
-
-# Creators
-- Aashvik Tyagi
-- Ibrahim Sarwar
-- Amar Al-Zubaidi
-- Aiden Tenn
