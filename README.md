@@ -1,12 +1,17 @@
 # About
 
-ShutterDex allows you to take a picture from a Pokeball and see the captured object come to life. 
+ShutterDex allows you to take a picture from a Pokéball and see the captured object come to life. 
+
+<img width="817" height="311" alt="ball" src="https://github.com/user-attachments/assets/c6a3b8d9-cf15-40c2-aa7e-0aaefde84ab9" />
 
 Submitted to [Hack the North 2026](https://devpost.com/software/htn-vgd2jp).
+
 Utilized Hack the North 2026's [badges](https://badge.hackthenorth.com/).
 
+## Capture Pipeline
+
 A camera connected to an ESP32 sends its images to the server where they go through an image processing pipeline. This pipeline:
-- Generates a sprite for the Pokemon
+- Generates a sprite for the Pokémon
     - A VLM generates a text description of the object which is passed to an image gen model to create the sprite
     - An LLM then generates the following attributes:
         - Name
@@ -15,11 +20,11 @@ A camera connected to an ESP32 sends its images to the server where they go thro
         - Moves
         - Flavour text
         - Battle natures
-    - If no object can be recognized in the image, it will generate a "wisp" Pokemon.
+    - If no object can be recognized in the image, it will generate a "wisp" Pokémon.
     
-Once the generation has completed, the server sends a capture event to the connected badges, giving the option to capture or ignore the Pokemon. If captured, it gets added to an SQLite database, with all of its information, including the badge ID of the owner.
+Once the generation has completed, the server sends a capture event to the connected badges, giving the option to capture or ignore the Pokémon. If captured, it gets added to an SQLite database, with all of its information, including the badge ID of the owner.
 
-## Example Pokemon Data
+## Example Pokémon Data
 ```
 {
   "species": "coffee bean",
@@ -58,18 +63,20 @@ Once the generation has completed, the server sends a capture event to the conne
 }
 ```
 
-é
-
 ## Modes
-### Pokedex
+### Pokédex
 
-Allows you to view all of your Pokemon or release them. Consists of a grid on the left side of the screen and a more detailed view of the currently selected Pokemon on the right side.
+Allows you to view all of your Pokémon or release them. Consists of a grid on the left side of the screen and a more detailed view of the currently selected Pokémon on the right side.
+
+<img width="497" height="400" alt="image" src="https://github.com/user-attachments/assets/dc71290b-e863-49d7-b193-0126010ff2d2" />
 
 ### Habitat
 
-The Habitat allows you to see the Pokemon you have captured interact with each other.
+The Habitat allows you to watch your Pokémon interact with each other.
 
-#### Pokemon State
+<img width="435" height="295" alt="image" src="https://github.com/user-attachments/assets/2f45bd34-9b58-4c01-8773-87908cec836f" />
+
+#### Pokémon State
 - Position
 - Mood
 - Energy
@@ -87,6 +94,8 @@ The Habitat allows you to see the Pokemon you have captured interact with each o
 ### Battle
 
 Battle is a real-time, server-authoritative, turn-based mode for two players. Each player uses a roster of one to six captured Pokémon, with one active Pokémon from each roster at a time.
+
+<img width="801" height="590" alt="image" src="https://github.com/user-attachments/assets/3e733354-2c73-4f1e-b4c5-ec4c472ae6d7" />
 
 #### Flow
 
@@ -118,7 +127,7 @@ Create `server/.env` file with the following variables:
 ```
 SHUTTERDEX_CREDENTIAL_KEY=
 BACKBOARD_API_KEY=
-POKEBALL_BADGE_ID=
+POKEBALL_BADGE_ID= // specifies which badges will receive the option to receive "new capture" prompts
 SHUTTERDEX_BADGES=[{"htn_id":"...","app_key":"..."}, {"htn_id":"...","app_key":"...", ...}]
 ```
 
